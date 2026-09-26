@@ -48,7 +48,7 @@ def act(c, agent, tool, target):
 
 
 def test_health_reports_store_and_policies():
-    app, store, _ = make(MemoryStore([TMP_POLICY]), edges={("a", "b")})
+    app, _, _ = make(MemoryStore([TMP_POLICY]), edges={("a", "b")})
     with TestClient(app) as c:
         h = c.get("/health").json()
     assert h["store"] == "memory" and h["active_policies"] == 1 and h["authorized_edges"] == ["a>b"]
@@ -120,7 +120,7 @@ def test_live_gateway_with_real_jev():
 def test_live_atlas_store_roundtrip():
     db_name = f"immune_harness_test_{uuid.uuid4().hex[:6]}"
     store = MongoStore(os.environ["MONGODB_URI"], db_name, refresh_s=0.2)
-    app, _, fake = make(store)
+    app, _, _ = make(store)
     try:
         with TestClient(app) as c:
             act(c, "alpha", "write_file", "/tmp/shared-note.txt")
