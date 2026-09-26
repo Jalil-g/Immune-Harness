@@ -1,16 +1,19 @@
-"""Shared data contracts (mirrors ARCHITECTURE.md).
+"""Person A's view of the shared contracts in db/schemas.py (Person B).
 
-Temporary home until Person B merges db/schemas.py — then import from there instead.
+- Policy / utc_now: straight from db.schemas.
+- Decision: db.schemas.Decision plus Sentry-only fields (source, threat category). `to_atlas()`
+  strips them, because Atlas documents (LedgerEntry / Incident) reject unknown fields.
+- Action: db.schemas.Action. Any tool name (built-ins in KNOWN_TOOLS, or e.g. "transfer_funds").
 """
-from datetime import datetime, timezone
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from db.schemas import KNOWN_TOOLS, Policy, utc_now
+from db.schemas import Action as AtlasAction
+from db.schemas import Decision as AtlasDecision
 
-# Built-in sandbox tools. Any other tool name is accepted too (e.g. a finance agent's "transfer_funds"),
-# so the harness works for agents in other domains; Jev judges them from `args` + the agent's guardrails.
-KNOWN_TOOLS = ("read_file", "write_file", "http_get", "shell", "send_message")
-Tool = str
+__all__ = ["KNOWN_TOOLS", "Action", "AtlasAction", "AtlasDecision", "Decision", "Policy",
+           "ThreatCategory", "utcnow"]
+
 ThreatCategory = Literal[
     "benign",
     "covert_channel",
@@ -20,44 +23,14 @@ ThreatCategory = Literal[
     "unauthorized_messaging",
     "guardrail_exploit",
 ]
+utcnow = utc_now
+Action = AtlasAction
 
 
-def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-class Action(BaseModel):
-    agent_id: str
-    tool: Tool
-    target: str  # path, URL, command, recipient agent, or account/resource for custom tools
-    args: dict = {}  # tool arguments (e.g. amount, approval) — shown to Jev
-    ts: datetime = Field(default_factory=utcnow)
-
-
-class Decision(BaseModel):
-    decision: Literal["allow", "block"]
-    reason: str
-    risk_score: float | None = None
-    policy_id: str | None = None
-    latency_ms: float
-    # Person A additions (optional, backwards compatible with the ARCHITECTURE.md contract)
+class Decision(AtlasDecision):
     source: Literal["policy", "jev", "fallback"] = "jev"
     threat_category: ThreatCategory | None = None
     category_confidence: float | None = None
 
-
-class Policy(BaseModel):
-    policy_id: str
-    version: int = 1
-    status: Literal["active", "superseded", "proposed", "rejected"] = "active"
-    effect: Literal["deny"] = "deny"
-    tool: list[Tool]
-    target_glob: list[str]
-    condition: Literal[
-        "always", "resource_touched_by_other_agent", "rate_exceeds", "unauthorized_recipient"
-    ] = "always"
-    window_s: int = 600
-    max_count: int | None = None  # only for rate_exceeds
-    expires_at: datetime | None = None
-    source_incident: str | None = None
-    rationale: str = ""
+    def to_atlas(self) -> AtlasDecision:
+        return AtlasDecision(**self.model_dump(include=set(AtlasDecision.model_fields)))

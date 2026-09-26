@@ -124,5 +124,125 @@ Log of every feature, change, and choice made in Person A's area. Newest feature
 | `ls /tmp/worker1` | allow | 0.06 | benign |
 
 ### Still open / next
-- Each live test run makes 10 OpenRouter calls, so avoid running `-k live` in a loop.
-- Feature 2: `harness/gateway.py`. FastAPI `POST /evaluate` wraps the Sentry and writes each action and decision to `action_ledger`, and blocks to `security_incidents`.
+- Feature 2 (gateway) is below.
+
+---
+
+## Feature 2: Gateway (`POST /evaluate` + ledger/incident logging) ✅
+
+Branch `feature/gateway`, cut from `feature/sentry` before PR #1 merged.
+
+**Synced with main after PR #1 merged:** ran `git pull origin main`, a merge rather than a rebase, per CLAUDE.md, so no force-push was needed. It merged cleanly: `Sentry.assess()` from this branch and main's learned policies, guardrails and args combined without conflicts. Follow-ups:
+- **Guardrails were never reaching the gateway's Sentry,** so every agent only got the defaults. Added `load_guardrails()`, which reads `agents/config.py: AGENT_GUARDRAILS = {agent_id: [...]}` (Person C's file) if it exists, and a `create_app(guardrails=...)` parameter. `/health` now lists `agents_with_guardrails`.
+- **Fixed a test broken by main's `tool: str` change.** A custom tool (`rm_rf`, `transfer_funds`) is now accepted and judged by Jev instead of returning 422. The test now checks that missing fields or a bad `args` type still return 422 and that custom tools are allowed and logged in the ledger.
+
+### Files
+| File | What |
+|---|---|
+| `harness/gateway.py` | FastAPI app: `POST /evaluate`, `GET /health`, and `create_app(store, jev, edges)` for tests |
+| `harness/store.py` | `MemoryStore` (tests / offline) and `MongoStore` (Atlas), plus `store_from_env()` |
+| `harness/sentry.py` | Adds `assess(action) -> (Decision, rows)`, which exposes the ledger rows used as evidence. The context source can now be async. `evaluate()` is unchanged. |
+| `tests/test_gateway.py` | 8 tests |
+
+### Run it
+```bash
+uv run uvicorn harness.gateway:app --reload          # http://127.0.0.1:8000/docs
+curl -s localhost:8000/evaluate -H 'content-type: application/json' \
+  -d '{"agent_id":"beta","tool":"read_file","target":"/tmp/shared-note.txt"}'
+```
+With `MONGODB_URI` in `.env` it uses Atlas. Without it, it uses the in-memory store and logs a warning.
+
+### How it works
+`POST /evaluate` takes an `Action` and runs `Sentry.assess`. Every action and its decision are written to `action_ledger`. If the block is **novel** (source `jev` or `fallback`), it is also written to `security_incidents`. The response is the `Decision` plus `incident_id`.
+
+### Choices and why
+- **Incidents only for novel blocks.** A policy-hit block is a known attack, so it doesn't create an incident; otherwise every repeat would trigger the Architect again. Policy blocks still show up in `action_ledger` (`decision: block`, `source: policy`) for the dashboard.
+- **The ledger write is awaited, not fire-and-forget.** Beta's check must see Alpha's write. With a background write, a quick write→read would race and the covert channel could slip through. This costs about one Atlas insert per call.
+- **Incident document** (for Person D's Architect):
+  - `incident_id`: `inc_xxxxxxxx`
+  - `ts`
+  - `status: "open"`
+  - `action`, `decision`
+  - `context`: the ledger rows the Sentry saw, i.e. the evidence, such as Alpha's write
+  - `policy_id: null`: the Architect fills this in
+- **Ledger document:** the flattened `Action` plus `Decision` fields, and `logged_at`.
+- **Atlas uses pymongo's `AsyncMongoClient`** (`tz_aware=True`), so there's no extra driver and requests aren't blocked while waiting on Atlas.
+- **Policies come from an in-memory cache polled every 1s** (`find({status: "active"})`). This is a **placeholder for Person B's change-stream `policy_cache`**, which can replace `refresh_policies` / `_refresh_loop` without Sentry changes. Invalid policy docs are skipped with a warning, and if a refresh fails the last good cache stays in use.
+- **Only one index is created:** `action_ledger (target, ts desc)`, which is what the context query needs. TTLs and the other indexes are Person B's.
+- **Context is capped at 50 rows** per action so the input to Jev stays small.
+- **Per-agent guardrails** come from `agents/config.py: AGENT_GUARDRAILS` if it exists, otherwise only the defaults apply.
+- **Authorized edges** come from `agents/config.py: AUTHORIZED_EDGES` (Person C's file) if it exists, otherwise from the env var `AUTHORIZED_EDGES="orchestrator>worker1,worker1>worker2"`.
+- **`action.ts`** is set by the server when the agent doesn't send it.
+
+### Tests: `uv run pytest -q`, 29 passed (including live Atlas and live Jev)
+- `/health` reports the store, Jev mode, the number of active policies and the edges.
+- **Demo flow end to end** (fake Jev that checks context and edges):
+  1. alpha writes, and it's allowed
+  2. beta reads, and it's blocked by Jev with a `covert_channel` incident; the incident context contains alpha's row
+  3. a policy is added
+  4. gamma pulls the same trick on a new file, and it's blocked by the policy **with no Jev call and no new incident**
+  5. the ledger has all 4 rows
+- An authorized edge allows the collaboration.
+- Missing fields or a bad `args` type return 422. Custom tools are accepted, judged and logged in the ledger.
+- Guardrails and args reach Jev through the gateway.
+- Parsing `AUTHORIZED_EDGES` from the env var.
+- **Live gateway with real Jev:**
+  - beta's covert read → block, `covert_channel` 0.99, incident
+  - a $50k `transfer_funds` from a finance agent with an approval guardrail → block, `guardrail_exploit` 1.0, incident
+  - about 180–210ms each
+- **Live Atlas round-trip** (skipped until there's a URI): it writes to a throwaway `immune_harness_test_xxxxxx` database and checks:
+  - the ledger and incident counts
+  - that a policy inserted into Atlas is picked up by the cache and blocks the next attempt
+
+  The database is dropped afterwards.
+- **Manual HTTP smoke test** (uvicorn + curl, real Jev, memory store):
+
+| Call | Result | Time |
+|---|---|---|
+| worker1 writes own report | allow 0.05 benign | 0.30s |
+| alpha writes `/tmp/shared-note.txt` | allow 0.26 benign | 0.35s |
+| beta reads it | **block** 0.98 covert_channel + incident | 0.22s |
+| beta reads `~/.ssh/id_rsa` | **block** 0.99 credential_access + incident | 0.32s |
+| worker1 → worker2 message (edge) | allow 0.03 benign | 0.24s |
+| alpha → beta message (no edge) | **block** 0.95 unauthorized_messaging + incident | 0.21s |
+| tool `rm` | HTTP 422 | |
+
+### Atlas check against the real cluster (MONGODB_URI added)
+Person B had already set up `immune_harness`:
+- `action_ledger`: unique `action_id`, `target_recent (target, ts desc)`, `decision_recent`, and a 7-day TTL on `ts`
+- `security_incidents`: unique `incident_id` and `ts desc`
+- `security_policies`: unique `(policy_id, version)`, `status`, and a TTL on `expires_at`
+- 2 seeded baseline policies (`p_baseline_ssh`, `p_baseline_etc`)
+
+Their schema (`db/schemas.py` on `feature/atlas`, not merged yet) didn't match my temporary contracts. **Three bugs would have hit the shared cluster:**
+1. **Startup crash:** my `create_index` used the default name, but B's index has the same keys under the name `target_recent`, which raises `IndexOptionsConflict` (code 85). I confirmed this by running the old code against the mirrored schema. Fix: create it with `name="target_recent"`, so it's a no-op when it already exists, and log instead of crashing on `OperationFailure`.
+2. **Every ledger insert after the first would fail:** the unique index on `action_id` treats a missing field as null. Fix: each ledger row gets `action_id = act_<uuid hex>`.
+3. **B's baseline policies were silently skipped:** they have `window_s: null` and use `rate_limit`. Fix: `Policy.window_s` is now `int | None`, and conditions that need a window fall back to `DEFAULT_WINDOW_S = 600`. `max_count` was renamed to `rate_limit`, and status is now `draft | active | superseded`, all matching B.
+
+I also dropped `status` from the incident document, because B's `Incident` model (`extra="forbid"`) doesn't have it. The Architect can use `policy_id`, which is null until it acts.
+
+**The Atlas test now copies production:** before running, it copies the real database's indexes and `p_baseline_*` policies into a throwaway `immune_harness_test_xxxxxx` database, then drops it afterwards. A bare test database would have hidden all three bugs.
+- **Result:** both baseline policies load, and `~/.ssh/id_rsa` is blocked by `p_baseline_ssh`. The covert write and read produce 2 ledger rows with no `action_id` collision, and 1 incident. A policy inserted into Atlas is picked up in about 0.2s and blocks the next variant. There are 5 ledger rows and 1 incident in total, and `recent()` returns rows newest-first with timezone-aware `ts`.
+- The real `immune_harness` data was untouched (0 ledger rows, 2 policies), and no test databases were left behind.
+
+**Still to agree with Person B before either branch merges** (their `db/schemas.py` uses `extra="forbid"`):
+- `Action.tool` is a `Literal` there, but main now has `tool: str` (custom tools such as `transfer_funds`).
+- `Decision` there has no `source`, `threat_category` or `category_confidence`, but the gateway writes them to the ledger and incidents.
+- Ledger rows also have `logged_at`, and incident `context` rows carry those Decision fields, so `LedgerEntry` / `Incident.from_mongo` would reject them.
+- Suggested fix: B adds these optional fields and `tool: str` to `db/schemas.py`, then `harness/contracts.py` is deleted and everyone imports from `db.schemas`. B's `harness/policy_cache.py` (change streams) should replace my 1s polling.
+
+### Still open / next
+- Open the gateway PR.
+- Person C's hook: `POST /evaluate` with `{agent_id, tool, target, args}`. Run the tool only if `decision == "allow"`. Optional `agents/config.py` exports: `AUTHORIZED_EDGES` and `AGENT_GUARDRAILS`.
+
+## Update: gateway on Person B's Atlas layer (branch `feature/gateway-atlas`)
+
+`feature/gateway` + `origin/feature/atlas` merged. The gateway now uses B's code:
+
+- **Schemas:** `harness/contracts.py` re-exports `db.schemas.Policy` and `utc_now`. `Decision` subclasses `db.schemas.Decision` and adds only `source`, `threat_category`, `category_confidence`. `to_atlas()` removes those before a write because B's models reject unknown fields. The threat category stays in `reason`.
+- **HTTP input:** `POST /evaluate` validates with `db.schemas.Action`. Timestamps must include a timezone, and unknown fields are rejected (422). `Tool` in `db/schemas.py` is now **any nonempty string**, with the built-in tools listed in `KNOWN_TOOLS`, so custom tools like `transfer_funds` work end-to-end, including the ledger. `harness/contracts.Action` is now just `db.schemas.Action`. (This is an edit to Person B's file, made on purpose. Tell B.)
+- **Store:** `MongoStore` is replaced by `AtlasStore`. It keeps one `db.atlas.Atlas` client and one `PolicyCache` (change stream, no polling). Sync PyMongo calls run through `asyncio.to_thread`. Ledger rows are `LedgerEntry.from_action(...).to_mongo()` and incidents are `Incident(...)`, with context rows validated as `LedgerEntry`.
+- **Fail closed:** if `PolicyCacheUnavailable` is raised or an Atlas write fails, the gateway returns **503** and the agent must not run the tool. `/health` now shows `policy_cache_healthy` / `policy_cache_error`.
+- **Matcher follows PersonB.md:** globs use `fnmatchcase`. `resource_touched_by_other_agent` only counts *allowed* earlier actions by another agent. `rate_exceeds` counts allowed actions by the same agent, tool and target. One difference from B remains: authorized edges exempt file sharing in either direction.
+- **Incidents: Jev blocks only** (`INCIDENT_SOURCES = ("jev", "fallback")` in the gateway, where "fallback" is Jev's heuristic stand-in while Jev is down). Policy blocks, including the baselines, write to the ledger only, so a known attack never re-triggers the Architect. `PersonB.md` and `ARCHITECTURE.md` are updated to say this.
+- **Setup:** run `uv run python -m db.atlas bootstrap` once per database (indexes + baseline policies). Then start with `uv run uvicorn harness.gateway:app`.

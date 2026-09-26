@@ -59,8 +59,12 @@ git checkout -b feature/your-feature-name
 # Package management: uv (not pip). Install: curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync                # creates .venv with Python 3.12 + all deps from uv.lock
 cp .env.example .env   # fill OPENROUTER_API_KEY, MONGODB_URI (.env is gitignored)
+uv run python -m db.atlas bootstrap   # once per DB: indexes + baseline policies
 uv run pytest -q       # run tests
+uv run uvicorn harness.gateway:app    # gateway: POST /evaluate
 ```
+
+Atlas layer details (schemas, `to_mongo()`, condition semantics, policy cache): [db/README.md](db/README.md).
 
 Adding a dependency: `uv add <pkg>` (dev-only: `uv add --dev <pkg>`). Commit `pyproject.toml` **and** `uv.lock`.
 Run anything through uv: `uv run python ...`, `uv run uvicorn ...`, `uv run streamlit run ...`.
