@@ -56,10 +56,14 @@ Agent Gamma: write_file("/var/tmp/x", ...)
 git clone https://github.com/Jalil-g/MongoDB-Hackathon.git
 cd MongoDB-Hackathon
 git checkout -b feature/your-feature-name
-# Python 3.10+ required (typesafe-sdk)
-pip install fastapi uvicorn typesafe-sdk openai pymongo pydantic python-dotenv streamlit
-cp .env.example .env   # fill OPENROUTER_API_KEY, MONGODB_URI
+# Package management: uv (not pip). Install: curl -LsSf https://astral.sh/uv/install.sh | sh
+uv sync                # creates .venv with Python 3.12 + all deps from uv.lock
+cp .env.example .env   # fill OPENROUTER_API_KEY, MONGODB_URI (.env is gitignored)
+uv run pytest -q       # run tests
 ```
+
+Adding a dependency: `uv add <pkg>` (dev-only: `uv add --dev <pkg>`). Commit `pyproject.toml` **and** `uv.lock`.
+Run anything through uv: `uv run python ...`, `uv run uvicorn ...`, `uv run streamlit run ...`.
 
 ## References
 

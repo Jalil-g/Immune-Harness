@@ -103,7 +103,10 @@ Authorized collaboration edges (who may message whom) live in `agents/config.py`
 
 ## Folder layout
 
+Tooling: **uv** (`pyproject.toml` + `uv.lock`, Python 3.12). `uv sync`, `uv add`, `uv run`. No pip / requirements.txt.
+
 ```
+pyproject.toml, uv.lock, .python-version, .env.example   # shared — coordinate before editing
 harness/
   gateway.py        # FastAPI /evaluate                          (A)
   sentry.py         # policy match + decision logic              (A)
