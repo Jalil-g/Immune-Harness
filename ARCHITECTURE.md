@@ -21,9 +21,10 @@ Detect (Jev) → Block → Architect rewrites policy → Compiler validates → 
  ┌──────────── GATEWAY (FastAPI POST /evaluate) ─────────────┐
  │ SENTRY                                                     │
  │  1. Policy match  in-memory cache (~1ms) → hit = BLOCK     │◄── change stream on security_policies
- │  2. Jev risk score 0-1 + reason (only if no policy hit)    │    (new policy live instantly, no restart)
+ │  2. Jev typed questions via OpenRouter (if no policy hit)  │    (new policy live instantly, no restart)
+ │     violates_guardrails? (Noul) + threat_category (Choice) │
  │     context: recent action_ledger rows on same resource    │
- │  → BLOCK if score > 0.8                                    │
+ │  → BLOCK if violates_guardrails > 0.8                      │
  │  every action + decision → action_ledger                   │
  └──────┬──────────────────────────────┬──────────────────────┘
    allow│                         block│ → insert security_incidents
@@ -45,16 +46,33 @@ Detect (Jev) → Block → Architect rewrites policy → Compiler validates → 
 |---|---|---|
 | `security_policies` | Versioned deny rules (`policy_id`, `version`, `status`) | Change streams (hot reload), TTL index on `expires_at` |
 | `action_ledger` | Every proposed action + decision + score | Index on `(target, ts)` for Jev context; TTL index; change stream feeds dashboard |
-| `security_incidents` | Blocked action, Jev score/reason, context, resulting policy id | Change stream triggers Architect + dashboard |
+| `security_incidents` | Blocked action, Jev answers (risk, threat category + probabilities), context, resulting policy id | Change stream triggers Architect + dashboard |
 
 Old policy versions stay in `security_policies` with `status: "superseded"` so the dashboard can show the diff.
+
+## Models (one key: `OPENROUTER_API_KEY`)
+
+| Use | Model | How |
+|---|---|---|
+| Sentry risk scoring | Jev (`~typesafe/jev-latest`) | `typesafe-sdk` pointed at OpenRouter: `AsyncTypeSafeClient(api_key=OPENROUTER_API_KEY, base_url="https://openrouter.ai/api", model="~typesafe/jev-latest")` |
+| Architect policy drafting | Claude via OpenRouter | OpenAI-compatible chat API + Pydantic structured output |
+
+Jev does not write text. It answers typed questions with calibrated probabilities:
+- `violates_guardrails` — **Noul** (0-1) → the risk score
+- `threat_category` — **Choice** over `benign, covert_channel, credential_access, sandbox_escape, exfiltration, unauthorized_messaging, guardrail_exploit` → the "reason"
+  - `guardrail_exploit` is the broad one: the agent goes against its own policy/guardrails or tries to exploit a weakness to get around them (limits, approvals, permissions, injected inputs, path traversal). Works for any domain, e.g. finance agents.
+- Jev's state = the action (incl. `args`), the agent's **guardrails** (natural-language rules: defaults for all agents + per-agent ones, e.g. a payments agent's limits), recent activity by other agents on the target, authorized edges, and **learned policies** (plain-language summaries of active policies, so Jev also blocks *variants* the exact rule misses).
+- Risk = `max(violates_guardrails, 1 − P(benign))`; block if > 0.8.
+
+Free-text explanations come from the Architect (`rationale` field of the policy), off the fast path.
+`typesafe-sdk` requires **Python 3.10+**.
 
 ## Shared schemas (`db/schemas.py`) — agree in hour 0-1, then build against mocks
 
 ```python
 class Action(BaseModel):
     agent_id: str
-    tool: Literal["read_file", "write_file", "http_get", "shell", "send_message"]
+    tool: str              # built-ins: read_file, write_file, http_get, shell, send_message; any custom tool (e.g. transfer_funds) allowed
     target: str            # path, URL, command, or recipient agent
     args: dict = {}
     ts: datetime
@@ -88,10 +106,14 @@ Authorized collaboration edges (who may message whom) live in `agents/config.py`
 
 ## Folder layout
 
+Tooling: **uv** (`pyproject.toml` + `uv.lock`, Python 3.12). `uv sync`, `uv add`, `uv run`. No pip / requirements.txt.
+
 ```
+pyproject.toml, uv.lock, .python-version, .env.example   # shared — coordinate before editing
 harness/
   gateway.py        # FastAPI /evaluate                          (A)
-  sentry.py         # policy match + Jev call                    (A)
+  sentry.py         # policy match + decision logic              (A)
+  jev.py            # Jev via OpenRouter (typesafe-sdk)          (A)
   policy_cache.py   # load active policies + change stream       (B)
   architect.py      # incident → policy JSON (structured output) (D)
   compiler.py       # validate + replay + activate               (D)
@@ -110,7 +132,7 @@ sandbox/            # fake filesystem — nothing touches real /tmp or ~/.ssh
 
 ## Team split
 
-- **A — Gateway + Sentry:** `/evaluate`, policy matching, Jev prompt (with a heuristic fallback if Jev is slow/down), write to ledger/incidents.
+- **A — Gateway + Sentry:** `/evaluate`, policy matching, Jev typed questions via OpenRouter (with a heuristic fallback if Jev is slow/down), write to ledger/incidents.
 - **B — Atlas:** cluster, collections, indexes, TTLs, `policy_cache.py` change stream, seed baseline policies (e.g. block `~/.ssh/*`, `/etc/*`).
 - **C — Agents + scenarios:** hook, sandboxed tool runner, scripted attacks, benign traffic.
 - **D — Architect + Compiler + Dashboard:** structured-output prompt, policy versioning, replay check, Streamlit.
