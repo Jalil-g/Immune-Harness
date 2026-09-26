@@ -61,7 +61,18 @@ result = process_incident(incident, active, ledger)
 
 - **Person A (gateway/Sentry):** a call to `process_incident` after a block, passing active policies and a ts-ascending ledger. Persist the result as above.
 - **Person B (Atlas):** nothing new. `Incident` has no place for the Compiler's `reason`; if we want it in the dashboard, add an optional `compiler_note` field.
-- Nothing triggers `process_incident` yet: the gateway writes to `security_incidents` and stops. D needs a watcher on that collection (see Known gaps).
+- Nothing else: `harness/incident_watcher.py` watches `security_incidents` and calls `process_incident` itself.
+
+## Incident watcher
+
+`harness/incident_watcher.py` closes the loop. It watches `security_incidents` inserts (change stream), loads active policies and the newest 200 ledger rows (ts ascending), runs `process_incident`, then:
+1. inserts the new policy version (first, so the cache never sees zero active versions)
+2. marks the old version `superseded`
+3. sets `incident.policy_id`
+
+`PolicyCache` hot-reloads, so the next attempt is blocked by policy. Policy blocks never create incidents, so there is no loop. A `DuplicateKeyError` on `(policy_id, version)` means another watcher won the race, and the incident is skipped. A bad incident is logged and the loop keeps going; a lost stream is reopened.
+
+Run it next to the gateway: `uv run python -m harness.incident_watcher` (needs `MONGODB_URI`; `AUTHORIZED_EDGES` or `agents/config.py` for edges).
 
 ## Run it
 
@@ -75,7 +86,8 @@ The demo shows: benign traffic passes, alpha-writes/beta-reads is blocked by Jev
 ## Known gaps
 
 - No Mongo wrapper yet (fetch active and ledger, then persist). About 15 lines once the gateway is ready.
-- No watcher yet: nothing calls `process_incident` when the gateway inserts an incident.
+- The watcher hasn't been run against a live Atlas cluster, only against an in-memory fake with a fake stream.
+- If the watcher is down when an incident arrives, that incident is missed (no catch-up on startup).
 - The Architect doesn't draft `rate_exceeds` or `unauthorized_recipient`.
 - `Incident` drops Jev's `threat_category`, so the Architect can't use it.
 - The mock only knows one policy (`p_tmp_channel`); other threats need the LLM path.
