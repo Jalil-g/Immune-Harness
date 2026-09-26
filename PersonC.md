@@ -201,6 +201,22 @@ Ran `./run_demo.sh test` with `OPENROUTER_API_KEY` against A's gateway (`6696db4
 
 ---
 
+## Check: all branches combined (main + gateway + agents + atlas) — local only
+
+Merged everything into a throwaway local copy of `main` (nothing pushed) and ran all tests + live Jev.
+
+- **Git conflicts:**
+  - `feature/gateway` and `feature/agents` merge into main cleanly
+  - `feature/atlas` conflicts in `ARCHITECTURE.md` only (docs)
+- **B's `pyproject.toml` replaces the team's.** It drops `fastapi`, `uvicorn`, `typesafe-sdk`, `openai`, `streamlit`, the `pytest` dev group, `package = false` and `pythonpath`. Git merges it without conflict, but `uv run pytest` then fails and the gateway can't start. B should only *add* `dnspython` (`uv add dnspython`).
+- **With main's pyproject + dnspython:** 97 passed, 1 failed, 7 skipped.
+  - The failure is A's `test_load_edges_from_env`. It assumes `agents/config.py` doesn't exist; once my agents are merged, `load_edges()` correctly prefers my config.
+  - Fix for A: in that test, `monkeypatch.setitem(sys.modules, "agents.config", None)` so the import fails.
+- **Live Jev on combined code:** everything passes except step 2 (beta risk 0.76–0.81), the same threshold issue as before.
+- **Fixed my live test:** it now uses a unique file-name suffix per run. Re-running against the same gateway (or Atlas, which persists) used to fail, because the gateway correctly remembered the previous run's cross-agent file access.
+
+---
+
 ### Still open / next
 - Re-run integration with a real `OPENROUTER_API_KEY` (Jev instead of the fallback) and with Atlas (`MONGODB_URI`); check actions show up in `action_ledger`.
 - Check with Person B that baseline policies cover step 6 (`~/.ssh/*`, `/etc/*`, unauthorized `send_message`).
