@@ -1,7 +1,8 @@
 """Gateway: POST /evaluate — every agent tool call is checked here before it runs.
 
-Flow: Action -> Sentry (policy match, else Jev) -> log to action_ledger -> if a novel block
-(Jev/fallback, not an existing policy) -> security_incidents, which triggers the Architect.
+Flow: Action -> Sentry (policy match, else Jev) -> log to action_ledger -> if Jev blocked it
+(a new attack) -> security_incidents, which triggers the Architect. Policy blocks (incl. baselines)
+are ledger-only: the attack is already known, and an incident would loop the Architect.
 
 Fail closed: invalid Action -> 422; policy cache unavailable or Atlas write failed -> 503.
 Agents must only execute a tool on HTTP 200 with decision == "allow".
@@ -25,6 +26,10 @@ from harness.store import AtlasStore, MemoryStore, store_from_env
 
 load_dotenv()
 log = logging.getLogger("harness.gateway")
+
+
+# "fallback" = the Jev path while Jev is down/slow (heuristic stand-in), so it still counts as a Jev block.
+INCIDENT_SOURCES = ("jev", "fallback")
 
 
 class EvaluateResponse(Decision):
@@ -79,7 +84,7 @@ def create_app(store: MemoryStore | AtlasStore | None = None, jev: JevScorer | N
             # write->read covert channel could slip through a race.
             await store.log_action(action, decision)
             incident_id = None
-            if decision.decision == "block" and decision.source != "policy":
+            if decision.decision == "block" and decision.source in INCIDENT_SOURCES:
                 incident_id = await store.log_incident(action, decision, rows)
         except PyMongoError as e:
             log.error("persistence failed (%s); failing closed", type(e).__name__)

@@ -26,7 +26,7 @@ Detect (Jev) → Block → Architect rewrites policy → Compiler validates → 
  │  → BLOCK if score > 0.8                                    │
  │  every action + decision → action_ledger                   │
  └──────┬──────────────────────────────┬──────────────────────┘
-   allow│                         block│ → insert security_incidents
+   allow│                         block│ → insert security_incidents (Jev blocks only; policy blocks are ledger-only)
         ▼                              ▼
   Tool runner                  ARCHITECT (async, change stream on security_incidents)
   (fake FS in ./sandbox)         LLM + Pydantic structured output → new policy OR version+1 of existing

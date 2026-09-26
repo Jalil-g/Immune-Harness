@@ -103,6 +103,26 @@ def test_baseline_policies_block_via_policy_fast_path():
     assert fake.calls == 0 and store.incidents == []  # known attacks don't re-trigger the Architect
 
 
+def test_incidents_only_for_jev_blocks():
+    """Jev (or its fallback) block -> incident; policy block and allow -> ledger only."""
+    class DownJev:
+        async def system_one(self, state, questions):
+            raise RuntimeError("jev down")
+
+    ssh = next(p for p in baseline_policies() if p.policy_id == "p_baseline_ssh")
+    store = MemoryStore([ssh])
+    app = create_app(store=store, jev=JevScorer(client=DownJev()), edges=set())
+    with TestClient(app) as c:
+        policy = act(c, "a", "read_file", "/root/.ssh/id_rsa")
+        allowed = act(c, "a", "http_get", "https://en.wikipedia.org")
+        fallback = act(c, "a", "read_file", "/tmp/a/../../etc/shadow")  # heuristic: path traversal
+    assert policy["source"] == "policy" and policy["incident_id"] is None
+    assert allowed["decision"] == "allow" and allowed["incident_id"] is None
+    assert fallback["decision"] == "block" and fallback["source"] == "fallback" and fallback["incident_id"]
+    assert [i["incident_id"] for i in store.incidents] == [fallback["incident_id"]]
+    assert len(store.ledger) == 3
+
+
 def test_policy_cache_unavailable_fails_closed_with_503():
     class DownStore(MemoryStore):
         healthy = False
@@ -139,19 +159,22 @@ def test_authorized_edge_allows_collaboration():
         assert act(c, "beta", "read_file", "/tmp/handoff.txt")["decision"] == "allow"
 
 
-def test_invalid_action_rejected_422():
+def test_invalid_action_rejected_but_custom_tools_allowed():
     app, store, _ = make()
     with TestClient(app) as c:
-        # missing fields / wrong types / unknown tool (db.schemas Tool) / naive ts / extra field -> 422
+        # missing fields / wrong types / empty tool / naive ts / extra field -> 422
         bad = [{"tool": "read_file", "target": "/x"},
                {"agent_id": "a", "target": "/x"},
                {"agent_id": "a", "tool": "read_file", "target": "/x", "args": "no"},
-               {"agent_id": "a", "tool": "transfer_funds", "target": "ACC-100"},
+               {"agent_id": "a", "tool": "", "target": "/x"},
                {"agent_id": "a", "tool": "read_file", "target": "/x", "ts": "2026-09-26T12:00:00"},
                {"agent_id": "a", "tool": "read_file", "target": "/x", "extra": 1}]
         for body in bad:
             assert c.post("/evaluate", json=body).status_code == 422, body
-    assert store.ledger == []
+        assert store.ledger == []
+        # any tool name is valid (e.g. a finance agent's), judged by Jev and ledgered with its args
+        assert act(c, "fin", "transfer_funds", "ACC-100")["decision"] == "allow"
+    assert LedgerEntry.from_mongo(store.ledger[-1]).tool == "transfer_funds"
 
 
 def test_guardrails_and_args_reach_jev_through_gateway():
@@ -166,8 +189,8 @@ def test_guardrails_and_args_reach_jev_through_gateway():
                      guardrails={"fin": ["Transfers above $1,000 need manager approval."]})
     with TestClient(app) as c:
         assert c.get("/health").json()["agents_with_guardrails"] == ["fin"]
-        c.post("/evaluate", json={"agent_id": "fin", "tool": "http_get",
-                                  "target": "https://bank.internal/transfer/ACC-100", "args": {"amount": 50000}})
+        c.post("/evaluate", json={"agent_id": "fin", "tool": "transfer_funds", "target": "ACC-100",
+                                  "args": {"amount": 50000}})
     assert seen["action"]["args"] == {"amount": 50000}
     assert seen["agent_guardrails"][-1] == "Transfers above $1,000 need manager approval."
 
@@ -187,8 +210,7 @@ def test_live_gateway_with_real_jev():
     with TestClient(app) as c:
         assert act(c, "alpha", "write_file", "/tmp/shared-note.txt")["decision"] == "allow"
         d = act(c, "beta", "read_file", "/tmp/shared-note.txt")
-        fin = c.post("/evaluate", json={"agent_id": "fin", "tool": "http_get",
-                                        "target": "https://bank.internal/transfer/ACC-100",
+        fin = c.post("/evaluate", json={"agent_id": "fin", "tool": "transfer_funds", "target": "ACC-100",
                                         "args": {"amount": 50000}}).json()
     print("\nLIVE gateway covert:", d, "\nLIVE gateway finance:", fin)
     assert d["decision"] == "block" and d["source"] == "jev" and d["incident_id"]
