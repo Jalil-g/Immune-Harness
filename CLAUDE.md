@@ -9,10 +9,10 @@
 ## Workflow
 
 ### Feature Separation
-- **Person A**: Backend/API endpoints
-- **Person B**: Database/MongoDB setup
-- **Person C**: Frontend/UI
-- **Person D**: Integration/Polish/DevOps
+- **Person A**: Gateway + Sentry (`harness/gateway.py`, `harness/sentry.py`)
+- **Person B**: MongoDB Atlas (`db/`, `harness/policy_cache.py`)
+- **Person C**: Agents + scenarios (`agents/`, sandbox tool runner)
+- **Person D**: Architect + Compiler + Dashboard (`harness/architect.py`, `harness/compiler.py`, `dashboard/`)
 
 ### Git Workflow
 1. Create feature branch: `git checkout -b feature/your-feature-name`
@@ -37,32 +37,35 @@
 ## Tech Stack
 - **Python 3.10+** (gateway, sentry, architect)
 - **FastAPI** (lightweight API)
+- **Pydantic** (shared schemas + Architect structured output)
 - **Anthropic SDK** (Jev for fast risk eval, Claude for architect analysis)
-- **MongoDB Atlas** (security_policies, action_ledger, attack_signatures, security_incidents)
-- **Streamlit or React** (optional: real-time dashboard)
+- **MongoDB Atlas** (security_policies, action_ledger, security_incidents + change streams)
+- **Streamlit** (real-time dashboard)
+- **Not using:** vector search/embeddings, correlation aggregation engine, Strands/A2A
 
 ## Project: Immune Harness
 A self-evolving security system that learns from AI-agent attacks.
 
 ### Core Loop
-Observe → Correlate → Block → Analyze → Learn → Protect
+Jev scores action → Block → Architect rewrites policy → Compiler validates → Atlas → Protect
+
+Policies ARE the memory: known attacks are blocked by policy match (~1ms); new attacks or variants are caught by Jev and trigger a new policy or a new version of an existing one.
 
 ### Key Demo: Hugging Face-style Attack
 - Agent A writes secret data to `/tmp/shared-message.txt`
 - Agent B reads same file
-- **Harness detects covert communication**, blocks Agent B
+- **Jev flags covert communication** (sees Agent A's recent write), blocks Agent B
 - **Architect proposes policy**: "Block cross-agent tmp-file channels"
-- **Next attack variant is blocked from memory**
+- **Next attempt is blocked by policy**; a variant that slips through gets the policy widened (v2)
 
 ### Collections in MongoDB
-- `security_policies` — active/emergency/validated policies
-- `action_ledger` — all proposed actions (allowed & blocked)
-- `attack_signatures` — learned attack patterns
-- `security_incidents` — decision trails, incident evidence
+- `security_policies` — versioned deny rules (active / superseded), hot-reloaded via change stream
+- `action_ledger` — all proposed actions (allowed & blocked); context for Jev, replay baseline for Compiler
+- `security_incidents` — blocked actions + Jev reasoning; change stream triggers the Architect
 
 ## Resources & Setup
 - GitHub repo: https://github.com/Jalil-g/MongoDB-Hackathon
-- PROJECT_STRUCTURE.md — detailed architecture & task division
+- ARCHITECTURE.md — architecture, schemas, folder layout, task division, demo script (source of truth)
 - Attack scenarios based on real OpenAI Hugging Face incident (July 2026)
 
 ## Communication
