@@ -1,5 +1,6 @@
 import asyncio
 import os
+import sys
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -196,6 +197,7 @@ def test_guardrails_and_args_reach_jev_through_gateway():
 
 
 def test_load_edges_from_env(monkeypatch):
+    monkeypatch.setitem(sys.modules, "agents.config", None)  # env fallback only applies without agents/config.py
     monkeypatch.setenv("AUTHORIZED_EDGES", "orchestrator>worker1, worker1>worker2,bad")
     assert load_edges() == {("orchestrator", "worker1"), ("worker1", "worker2")}
 
