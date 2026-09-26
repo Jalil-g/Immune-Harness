@@ -32,10 +32,12 @@
 - **No overthinking** — ship it, don't refactor
 - **Add comments only if unclear**
 - **Consistent style** within your feature area
-- **Test your code locally** before pushing
+- **Test your code locally** before pushing (`uv run pytest -q`)
+- **Secrets live in `.env`** (gitignored; copy from `.env.example`) — never commit keys
 
 ## Tech Stack
-- **Python 3.10+** (gateway, sentry, architect) — required by `typesafe-sdk`
+- **Python 3.10+** (gateway, sentry, architect) — required by `typesafe-sdk`; pinned to 3.12 in `.python-version`
+- **uv for package management — never pip.** `uv sync` to install, `uv add <pkg>` / `uv add --dev <pkg>` to add deps, `uv run <cmd>` to run (e.g. `uv run pytest -q`). Commit `pyproject.toml` + `uv.lock` together.
 - **FastAPI** (lightweight API)
 - **Pydantic** (shared schemas + Architect structured output)
 - **OpenRouter** (one `OPENROUTER_API_KEY`): Jev via `typesafe-sdk` (`base_url=https://openrouter.ai/api`, `model=~typesafe/jev-latest`) for risk eval; Claude via OpenAI-compatible API for architect
