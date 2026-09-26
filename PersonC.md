@@ -176,7 +176,7 @@ Scripted demo steps, run with `--all` (pauses between steps), `--step N`, `--no-
 - Run it locally with `./run_demo.sh test`. `run_demo.sh` is a local-only helper, not committed: it starts A's gateway from `feature/gateway` in `.gateway/`, runs the test, then stops the gateway.
 - **Result (fallback, no Jev key yet):** 5/5 passed.
 - Pulled `main` (A's Sentry, PR #1). All tests pass: 37 passed, 8 skipped (live tests without key/gateway).
-- **Found:** `feature/gateway` calls `sentry.assess()`, which isn't in `main`'s newer `sentry.py`. The gateway must be rebased onto `main` before it can merge. Told Person A.
+- **Found:** `feature/gateway` calls `sentry.assess()`, which isn't in `main`'s newer `sentry.py`. The gateway must be rebased onto `main` before it can merge — tell Person A.
 
 ---
 
