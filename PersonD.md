@@ -67,7 +67,7 @@ result = process_incident(incident, active, ledger)
 
 ```
 uv run python scripts/simulate_policy_learning.py            # fake gateway + Jev, in-memory store, full v1 → v2 story
-uv run pytest -q
+uv run pytest -q                   # tests/test_architect_compiler.py covers D
 ```
 
 The demo shows: benign traffic passes, alpha-writes/beta-reads is blocked by Jev and produces `p_tmp_channel v1`, a same-directory variant is blocked by policy with no LLM call, a `/var/tmp` variant slips through and widens to v2, and two bad drafts are rejected (too broad; false positives).
@@ -75,7 +75,6 @@ The demo shows: benign traffic passes, alpha-writes/beta-reads is blocked by Jev
 ## Known gaps
 
 - No Mongo wrapper yet (fetch active and ledger, then persist). About 15 lines once the gateway is ready.
-- No unit tests for D beyond the demo.
 - No watcher yet: nothing calls `process_incident` when the gateway inserts an incident.
 - The Architect doesn't draft `rate_exceeds` or `unauthorized_recipient`.
 - `Incident` drops Jev's `threat_category`, so the Architect can't use it.
