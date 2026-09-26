@@ -1,5 +1,5 @@
 """End-to-end demo of D with fake upstream (gateway/Jev) and in-memory store, using the shared db.schemas types.
-Run: uv run python demo_d.py
+Run: uv run python scripts/simulate_policy_learning.py
 """
 import time
 from datetime import datetime, timedelta, UTC
