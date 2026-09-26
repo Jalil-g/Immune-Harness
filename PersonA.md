@@ -5,15 +5,21 @@ Log of every feature, change, and choice made in Person A's area. Newest feature
 ## Setup
 
 - Branch: `feature/sentry`
-- Python **3.12** venv (`uv venv --python 3.12 .venv`). The system Python is 3.9, and `typesafe-sdk` needs 3.10+.
-- Deps: `typesafe-sdk fastapi uvicorn pymongo pydantic python-dotenv pytest httpx`
-- Run tests: `.venv/bin/python -m pytest -q` (`pytest.ini` sets `pythonpath = .`)
-- Env: `OPENROUTER_API_KEY` (Jev), optional `JEV_MODEL` (default `~typesafe/jev-latest`) and `RISK_THRESHOLD` (default `0.8`)
+- **uv for package management, never pip.** `uv sync` builds `.venv` (Python 3.12 from `.python-version`) out of `pyproject.toml` and `uv.lock`. Add deps with `uv add <pkg>` or `uv add --dev <pkg>`.
+- Run tests: `uv run pytest -q`. The pytest config (`pythonpath = ["."]`) lives in `pyproject.toml`.
+- Env: a local `.env` (gitignored, copied from `.env.example`) is loaded by `tests/conftest.py` via python-dotenv. The keys are `OPENROUTER_API_KEY` (Jev), plus optional `JEV_MODEL` (default `~typesafe/jev-latest`) and `RISK_THRESHOLD` (default `0.8`).
 
 ## Changes pushed directly to main (docs only)
 
 - `ARCHITECTURE.md`, `README.md`, `CLAUDE.md`: Jev and the Architect both go through **OpenRouter** with one `OPENROUTER_API_KEY`. The Sentry asks Jev typed questions (Noul risk + Choice threat category) instead of asking for "score + reason". Python 3.10+ is required.
 - Added `.gitignore` (`.venv`, `.env`, `__pycache__`, `sandbox/*`) and `.env.example`.
+- Switched to **uv**: added `pyproject.toml` (runtime deps plus a `dev` group with pytest/httpx, and the pytest config), `uv.lock`, and `.python-version` (3.12). Docs now say uv instead of pip.
+
+---
+
+## Change log
+
+- **uv migration (feature/sentry):** rebased onto main's uv setup. Deleted `pytest.ini` because its config moved to `pyproject.toml`. Added `tests/conftest.py`, which loads `.env` so the live Jev test picks up the key. No code changes were needed, since the dependencies were already in `pyproject.toml`.
 
 ---
 
@@ -53,7 +59,7 @@ Log of every feature, change, and choice made in Person A's area. Newest feature
 - An authorized edge counts in **both directions** for the cross-agent checks: alpha→beta allows beta to read alpha's file. For `send_message` it's directional (sender→recipient).
 - Policies whose status isn't `active`, or whose `expires_at` has passed, are skipped even if the cache still holds them.
 
-### Tests (`.venv/bin/python -m pytest -q`): **13 passed, 1 skipped**
+### Tests (`uv run pytest -q`): **13 passed, 1 skipped**
 - Policy path:
   - an `always` policy blocks without calling Jev
   - a cross-agent tmp policy blocks Gamma reading Alpha's file
@@ -69,7 +75,7 @@ Log of every feature, change, and choice made in Person A's area. Newest feature
 - **Real `typesafe-sdk` client with mocked HTTP:**
   - it calls `openrouter.ai/api/...` with `Bearer <OPENROUTER_API_KEY>` and model `~typesafe/jev-latest`
   - it parses the real response format into a Decision
-- **Live Jev test:** skipped because there's no `OPENROUTER_API_KEY` on this machine yet. Run it with `OPENROUTER_API_KEY=... .venv/bin/python -m pytest -q -s -k live`.
+- **Live Jev test:** skipped because there's no `OPENROUTER_API_KEY` on this machine yet. Put the key in `.env`, then run `uv run pytest -q -s -k live`.
 
 ### Still open / next
 - Run the live test once the team has an OpenRouter key, then tune the threshold and question wording against real Jev scores.
