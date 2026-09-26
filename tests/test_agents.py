@@ -20,9 +20,8 @@ def sandbox(tmp_path, monkeypatch):
 # --- config ---
 
 def test_edges_only_reference_known_agents():
-    for sender, recipients in AUTHORIZED_EDGES.items():
-        assert sender in AGENTS
-        assert all(r in AGENTS for r in recipients)
+    for sender, recipient in AUTHORIZED_EDGES:
+        assert sender in AGENTS and recipient in AGENTS
 
 
 def test_is_authorized_is_directional_and_attackers_have_no_edges():
