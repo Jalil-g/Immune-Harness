@@ -1,61 +1,73 @@
-"""Compiler: validate a draft Policy, replay it against the ledger, then activate it (version + supersede)."""
+"""Compiler: validate a draft Policy, replay it against the ledger, then version it (supersede the old one).
+
+Pure functions over the shared db.schemas types; the caller persists the result.
+"""
+from dataclasses import dataclass
+from datetime import timedelta
 from fnmatch import fnmatch
-from harness.architect import Policy
+
+from db.schemas import Action, Incident, LedgerEntry, Policy
 
 MAX_FP = 0.05
 BAD_GLOBS = {"*", "/*", "**"}
+SUPPORTED = {"always", "resource_touched_by_other_agent"}
 
 
-def matches(policy: dict, action: dict, ledger: list[dict]) -> bool:
-    if action["tool"] not in policy["tool"]:
+@dataclass
+class CompileResult:
+    ok: bool
+    reason: str
+    policy: Policy | None = None      # new active version to insert
+    superseded: Policy | None = None  # old version to mark superseded (status="superseded")
+
+
+def matches(policy: Policy, action: Action, ledger: list[LedgerEntry]) -> bool:
+    if action.tool not in policy.tool:
         return False
-    if not any(fnmatch(action["target"], g) for g in policy["target_glob"]):
+    if not any(fnmatch(action.target, g) for g in policy.target_glob):
         return False
-    if policy["condition"] == "always":
+    if policy.condition == "always":
         return True
-    # resource_touched_by_other_agent
+    window = timedelta(seconds=policy.window_s)
     return any(
-        r["target"] == action["target"] and r["agent_id"] != action["agent_id"]
-        and 0 <= action["ts"] - r["ts"] <= policy["window_s"]
-        for r in ledger if r["ts"] < action["ts"]
+        r.target == action.target and r.agent_id != action.agent_id
+        and timedelta(0) <= action.ts - r.ts <= window
+        for r in ledger if r.ts < action.ts
     )
 
 
-def compile_policy(draft: Policy, incident: dict, store: dict):
-    """Returns (ok, reason, policy_dict)."""
-    p = draft.model_dump()
-    if any(g in BAD_GLOBS for g in p["target_glob"]):
-        return False, "scope too broad", None
+def compile_policy(draft: Policy, incident: Incident, active: list[Policy], ledger: list[LedgerEntry]) -> CompileResult:
+    if draft.condition not in SUPPORTED:
+        return CompileResult(False, f"unsupported condition {draft.condition}")
+    if any(g in BAD_GLOBS for g in draft.target_glob):
+        return CompileResult(False, "scope too broad")
 
-    old = next((x for x in store["policies"] if x["policy_id"] == p["policy_id"] and x["status"] == "active"), None)
+    old = max((p for p in active if p.policy_id == draft.policy_id and p.status == "active"),
+              key=lambda p: p.version, default=None)
+    fields = draft.model_dump()
     if old:  # a new version may only widen: keep everything the old version covered
-        p["target_glob"] = old["target_glob"] + [g for g in p["target_glob"] if g not in old["target_glob"]]
-        p["tool"] = old["tool"] + [t for t in p["tool"] if t not in old["tool"]]
+        fields["target_glob"] = (*old.target_glob, *(g for g in draft.target_glob if g not in old.target_glob))
+        fields["tool"] = (*old.tool, *(t for t in draft.tool if t not in old.tool))
+        fields["version"] = old.version + 1
+    fields["status"] = "active"
+    policy = Policy(**fields)
 
-    ledger = store["ledger"]
-    if not matches(p, incident["action"], ledger):
-        return False, "policy would not have blocked the triggering action", None
+    history = list({e.action_id: e for e in [*ledger, *incident.context]}.values())
+    if not matches(policy, incident.action, history):
+        return CompileResult(False, "policy would not have blocked the triggering action")
 
-    allowed = [r for r in ledger if r["decision"] == "allow"][-200:]
-    hits = [r for r in allowed if matches(p, r, ledger)]
+    allowed = sorted((r for r in history if r.decision == "allow"), key=lambda r: r.ts)[-200:]
+    hits = [r for r in allowed if matches(policy, r, history)]
     fp = len(hits) / len(allowed) if allowed else 0.0
     if fp >= MAX_FP:
-        return False, f"false positive rate {fp:.0%} >= {MAX_FP:.0%}", None
+        return CompileResult(False, f"false positive rate {fp:.0%} >= {MAX_FP:.0%}")
 
-    if old:
-        old["status"] = "superseded"
-        p["version"] = old["version"] + 1
-    p["status"] = "active"
-    return True, f"ok (replay FP {fp:.0%} over {len(allowed)} rows)", p
+    superseded = old.model_copy(update={"status": "superseded"}) if old else None
+    return CompileResult(True, f"ok (replay FP {fp:.0%} over {len(allowed)} rows)", policy, superseded)
 
 
-def process_incident(incident: dict, store: dict) -> None:
-    """The whole D pipeline. Swap `store` reads/writes for Mongo later."""
+def process_incident(incident: Incident, active: list[Policy], ledger: list[LedgerEntry]) -> CompileResult:
+    """The whole D pipeline. Caller inserts result.policy, supersedes result.superseded, sets incident.policy_id."""
     from harness.architect import draft_policy
-    active = [p for p in store["policies"] if p["status"] == "active"]
-    draft = draft_policy(incident, active, store["ledger"])
-    ok, reason, policy = compile_policy(draft, incident, store)
-    if ok:
-        store["policies"].append(policy)
-        incident["policy_id"] = f'{policy["policy_id"]} v{policy["version"]}'
-    incident["compiler"] = reason
+    draft = draft_policy(incident, active, ledger)
+    return compile_policy(draft, incident, active, ledger)

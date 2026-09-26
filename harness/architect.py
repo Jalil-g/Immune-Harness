@@ -1,44 +1,54 @@
-"""Architect: incident -> draft Policy. Mock by default; real Claude if OPENROUTER_API_KEY is set."""
+"""Architect: Incident -> draft Policy. Mock by default; real Claude if OPENROUTER_API_KEY is set."""
 import os
 import posixpath
 from typing import Literal
 from pydantic import BaseModel
 
+from db.schemas import Incident, LedgerEntry, Policy, Tool
 
-class Policy(BaseModel):
+
+class PolicyDraft(BaseModel):
+    """Loose shape for LLM structured output; converted to the shared Policy."""
     policy_id: str
-    version: int = 1
-    status: Literal["active", "superseded"] = "active"
-    effect: Literal["deny"] = "deny"
-    tool: list[str]
+    tool: list[Tool]
     target_glob: list[str]
     condition: Literal["always", "resource_touched_by_other_agent"] = "always"
     window_s: int = 600
-    source_incident: str = ""
-    rationale: str = ""
+    rationale: str
 
 
-def draft_policy(incident: dict, active: list[dict], ledger: list[dict]) -> Policy:
+def draft_policy(incident: Incident, active: list[Policy], ledger: list[LedgerEntry]) -> Policy:
     if os.getenv("OPENROUTER_API_KEY") and not os.getenv("MOCK_ARCHITECT"):
         return _llm_draft(incident, active, ledger)
     return _mock_draft(incident, active)
 
 
-def _mock_draft(incident: dict, active: list[dict]) -> Policy:
-    a = incident["action"]
-    folder = posixpath.dirname(a["target"]) + "/*"
-    existing = next((p for p in active if p["policy_id"] == "p_tmp_channel"), None)
-    if existing:  # a variant slipped through -> widen the existing policy
-        globs = existing["target_glob"] + [folder]
-        rationale = existing["rationale"] + f" (widened to cover {folder})"
-        return Policy(**{**existing, "target_glob": globs, "rationale": rationale,
-                         "source_incident": incident["incident_id"]})
+def _to_policy(d: PolicyDraft, incident: Incident) -> Policy:
+    # small models return exact-file globs and tiny windows; enforce sane defaults
+    globs = [g if "*" in g else posixpath.dirname(g) + "/*" for g in d.target_glob]
+    other = d.condition == "resource_touched_by_other_agent"
     return Policy(
-        policy_id="p_tmp_channel", tool=["read_file", "write_file"],
-        target_glob=[folder], condition="resource_touched_by_other_agent",
-        source_incident=incident["incident_id"],
-        rationale="Cross-agent covert channel via shared temp files",
+        policy_id=d.policy_id, tool=tuple(d.tool), target_glob=tuple(globs),
+        condition=d.condition, window_s=max(d.window_s, 600) if other else None,
+        source_incident=incident.incident_id, rationale=d.rationale or "Drafted by Architect",
     )
+
+
+def _mock_draft(incident: Incident, active: list[Policy]) -> Policy:
+    folder = posixpath.dirname(incident.action.target) + "/*"
+    existing = next((p for p in active if p.policy_id == "p_tmp_channel"), None)
+    if existing:  # a variant slipped through -> widen the existing policy
+        return Policy(**{
+            **existing.model_dump(),
+            "target_glob": (*existing.target_glob, folder),
+            "rationale": f"{existing.rationale} (widened to cover {folder})",
+            "source_incident": incident.incident_id, "status": "draft",
+        })
+    return _to_policy(PolicyDraft(
+        policy_id="p_tmp_channel", tool=["read_file", "write_file"], target_glob=[folder],
+        condition="resource_touched_by_other_agent",
+        rationale="Cross-agent covert channel via shared temp files",
+    ), incident)
 
 
 SYSTEM = (
@@ -53,20 +63,17 @@ SYSTEM = (
 )
 
 
-def _llm_draft(incident: dict, active: list[dict], ledger: list[dict]) -> Policy:
+def _llm_draft(incident: Incident, active: list[Policy], ledger: list[LedgerEntry]) -> Policy:
     from openai import OpenAI
     client = OpenAI(api_key=os.environ["OPENROUTER_API_KEY"], base_url="https://openrouter.ai/api/v1")
-    user = f"Incident: {incident}\nActive policies: {active}\nRecent ledger: {ledger[-10:]}"
+    user = (
+        f"Incident: {incident.model_dump(mode='json')}\n"
+        f"Active policies: {[p.model_dump(mode='json') for p in active]}\n"
+        f"Recent ledger: {[e.model_dump(mode='json') for e in ledger[-10:]]}"
+    )
     r = client.beta.chat.completions.parse(
         model=os.getenv("ARCHITECT_MODEL", "anthropic/claude-sonnet-4.5"),
         messages=[{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}],
-        response_format=Policy,
+        response_format=PolicyDraft,
     )
-    return _normalize(r.choices[0].message.parsed)
-
-
-def _normalize(p: Policy) -> Policy:
-    # small models return exact-file globs and tiny windows; enforce sane defaults
-    p.target_glob = [g if "*" in g else posixpath.dirname(g) + "/*" for g in p.target_glob]
-    p.window_s = max(p.window_s, 600)
-    return p
+    return _to_policy(r.choices[0].message.parsed, incident)

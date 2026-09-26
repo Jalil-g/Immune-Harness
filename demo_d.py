@@ -1,12 +1,17 @@
-"""End-to-end demo of D with fake upstream (gateway/Jev) and in-memory store.
-Run: .venv/bin/python demo_d.py
+"""End-to-end demo of D with fake upstream (gateway/Jev) and in-memory store, using the shared db.schemas types.
+Run: uv run python demo_d.py
 """
 import time
-from harness.architect import Policy
-from harness.compiler import matches, compile_policy, process_incident
+from datetime import datetime, timedelta, UTC
+
+from db.schemas import Action, Decision, Incident, LedgerEntry, Policy
+from harness.compiler import compile_policy, matches, process_incident
 
 store = {"ledger": [], "incidents": [], "policies": []}
-clock = [1000.0]
+clock = [datetime(2026, 1, 1, tzinfo=UTC)]
+
+COVERT = Policy(policy_id="_jev", tool=("read_file",), target_glob=("*",),
+                condition="resource_touched_by_other_agent", window_s=600, rationale="fake jev heuristic")
 
 
 def step(msg):
@@ -15,37 +20,47 @@ def step(msg):
 
 def fake_jev(action):
     """Stand-in for Person A's Jev call: flag reads of /tmp-ish files another agent wrote."""
-    tmpish = action["target"].startswith(("/tmp/", "/var/tmp/", "/dev/shm/"))
-    if action["tool"] == "read_file" and tmpish and matches(
-        {"tool": ["read_file"], "target_glob": ["*"], "condition": "resource_touched_by_other_agent", "window_s": 600},
-        action, store["ledger"],
-    ):
-        return 0.95
-    return 0.02
+    tmpish = action.target.startswith(("/tmp/", "/var/tmp/", "/dev/shm/"))
+    return 0.95 if tmpish and matches(COVERT, action, store["ledger"]) else 0.02
+
+
+def record(a, decision, reason, risk=None, policy_id=None):
+    e = LedgerEntry.from_action(a, Decision(decision=decision, reason=reason, risk_score=risk,
+                                            policy_id=policy_id, latency_ms=1.0))
+    store["ledger"].append(e)
+    return e
 
 
 def call(agent, tool, target):
     """Stand-in for the gateway: policy match -> Jev -> ledger -> incident."""
-    clock[0] += 1
-    a = {"agent_id": agent, "tool": tool, "target": target, "ts": clock[0]}
-    active = [p for p in store["policies"] if p["status"] == "active"]
+    clock[0] += timedelta(seconds=1)
+    a = Action(agent_id=agent, tool=tool, target=target, ts=clock[0])
+    active = [p for p in store["policies"] if p.status == "active"]
     hit = next((p for p in active if matches(p, a, store["ledger"])), None)
     if hit:
-        store["ledger"].append({**a, "decision": "block", "by": f'policy {hit["policy_id"]} v{hit["version"]}'})
-        step(f"  {agent} {tool} {target} -> BLOCK by policy {hit['policy_id']} v{hit['version']} (no LLM call)")
+        record(a, "block", f"policy {hit.policy_id}", policy_id=hit.policy_id)
+        step(f"  {agent} {tool} {target} -> BLOCK by policy {hit.policy_id} v{hit.version} (no LLM call)")
         return
     risk = fake_jev(a)
     if risk > 0.8:
-        store["ledger"].append({**a, "decision": "block", "by": f"jev {risk}"})
-        inc = {"incident_id": f"inc_{len(store['incidents']) + 1}", "action": a, "risk": risk,
-               "threat_category": "covert_channel", "policy_id": None, "compiler": None}
+        entry = record(a, "block", "covert channel", risk)
+        inc = Incident(action=a, decision=Decision(decision="block", reason="covert channel",
+                       risk_score=risk, latency_ms=1.0), context=store["ledger"][-10:-1] or [])
         store["incidents"].append(inc)
-        step(f"  {agent} {tool} {target} -> BLOCK by Jev ({risk}) -> incident {inc['incident_id']}")
+        step(f"  {agent} {tool} {target} -> BLOCK by Jev ({risk}) -> incident {inc.incident_id[:12]}")
         t = time.time()
-        process_incident(inc, store)
-        step(f"    architect+compiler: {inc['compiler']} -> {inc['policy_id']} in {time.time() - t:.2f}s")
+        res = process_incident(inc, active, store["ledger"])
+        if res.ok:
+            if res.superseded:
+                store["policies"] = [p for p in store["policies"]
+                                     if (p.policy_id, p.version) != (res.superseded.policy_id, res.superseded.version)]
+                store["policies"].append(res.superseded)
+            store["policies"].append(res.policy)
+            inc.policy_id = res.policy.policy_id
+        step(f"    architect+compiler: {res.reason} -> {inc.policy_id} "
+             f"v{res.policy.version if res.policy else '-'} in {time.time() - t:.2f}s")
     else:
-        store["ledger"].append({**a, "decision": "allow", "by": f"jev {risk}"})
+        record(a, "allow", "low risk", risk)
         step(f"  {agent} {tool} {target} -> allow")
 
 
@@ -68,12 +83,14 @@ call("alpha", "write_file", "/var/tmp/x")
 call("gamma", "read_file", "/var/tmp/x")
 call("beta", "read_file", "/var/tmp/x")
 
+active = [p for p in store["policies"] if p.status == "active"]
 print("5. compiler rejects a bad draft (too broad)")
-bad = Policy(policy_id="p_bad", tool=["read_file"], target_glob=["/*"], condition="always")
-print("  ", compile_policy(bad, store["incidents"][0], store)[:2])
-bad2 = Policy(policy_id="p_bad2", tool=["read_file", "write_file"], target_glob=["/tmp/*", "/workspace/*"], condition="always")
-print("  ", compile_policy(bad2, store["incidents"][0], store)[:2])
+bad = Policy(policy_id="p_bad", tool=("read_file",), target_glob=("/*",), rationale="too broad")
+print("  ", compile_policy(bad, store["incidents"][0], active, store["ledger"]).reason)
+bad2 = Policy(policy_id="p_bad2", tool=("read_file", "write_file"), target_glob=("/tmp/*", "/workspace/*"),
+              rationale="hits benign traffic")
+print("  ", compile_policy(bad2, store["incidents"][0], active, store["ledger"]).reason)
 
 print("\nfinal policies:")
 for p in store["policies"]:
-    print(f"  {p['policy_id']} v{p['version']} [{p['status']}] {p['target_glob']}")
+    print(f"  {p.policy_id} v{p.version} [{p.status}] {list(p.target_glob)}")
