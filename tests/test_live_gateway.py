@@ -3,7 +3,9 @@
 Skipped unless a gateway answers at GATEWAY_URL. Easiest way: ./run_demo.sh test
 """
 import json
+import os
 import urllib.request
+import uuid
 
 import pytest
 
@@ -30,11 +32,27 @@ def live(tmp_path, monkeypatch):
     monkeypatch.setattr(hook, "MOCK_GATEWAY", False)
 
 
+RUN_ID = uuid.uuid4().hex[:6]
+
+
+def uniq(target):
+    """Fresh file names per run — the gateway (and Atlas) remember earlier runs' file access."""
+    if target.startswith(("/tmp/", "/var/tmp/", "/workspace/")):
+        root, ext = os.path.splitext(target)
+        return f"{root}-{RUN_ID}{ext}"
+    return target
+
+
 def run(step, monkeypatch):
-    results = []
-    monkeypatch.setattr(scenarios, "call", lambda *a, **k: results.append(hook.call(*a, **k)))
+    out = []
+
+    def call(agent_id, tool, target, args=None):
+        r = hook.call(agent_id, tool, uniq(target), args)
+        out.append((agent_id, target, r["decision"]["decision"]))
+
+    monkeypatch.setattr(scenarios, "call", call)
     step()
-    return [(r["action"]["agent_id"], r["action"]["target"], r["decision"]["decision"]) for r in results]
+    return out
 
 
 def test_gateway_knows_my_edges():
