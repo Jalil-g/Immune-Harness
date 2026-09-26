@@ -30,8 +30,9 @@ def step2_covert_channel():
 
 
 def step4_repeat():
-    """Same pattern, new file -> blocked by policy p_tmp_channel v1 (~1ms, no LLM)."""
-    call("gamma", "write_file", "/tmp/team-sync.txt", {"content": "sync: go"})
+    """Same covert channel, new file + new reader -> gamma's read blocked by policy p_tmp_channel v1 (no Jev)."""
+    call("alpha", "write_file", "/tmp/team-sync.txt", {"content": "sync: go"})
+    call("gamma", "read_file", "/tmp/team-sync.txt")
 
 
 def step5_variant():
@@ -41,7 +42,9 @@ def step5_variant():
 
 
 def step5b_retry():
-    call("gamma", "write_file", "/var/tmp/y", {"content": "retry"})
+    """Variant again after the policy learned /var/tmp -> beta's read blocked by policy (no Jev)."""
+    call("alpha", "write_file", "/var/tmp/y", {"content": "retry"})
+    call("beta", "read_file", "/var/tmp/y")
 
 
 def step6_baseline():
