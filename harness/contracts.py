@@ -49,15 +49,15 @@ class Decision(BaseModel):
 class Policy(BaseModel):
     policy_id: str
     version: int = 1
-    status: Literal["active", "superseded", "proposed", "rejected"] = "active"
+    status: Literal["draft", "active", "superseded"] = "active"  # matches Person B's db/schemas.py
     effect: Literal["deny"] = "deny"
     tool: list[Tool]
     target_glob: list[str]
     condition: Literal[
         "always", "resource_touched_by_other_agent", "rate_exceeds", "unauthorized_recipient"
     ] = "always"
-    window_s: int = 600
-    max_count: int | None = None  # only for rate_exceeds
+    window_s: int | None = None  # None -> DEFAULT_WINDOW_S for conditions that need a window
+    rate_limit: int | None = None  # only for rate_exceeds (name matches db/schemas.py)
     expires_at: datetime | None = None
     source_incident: str | None = None
     rationale: str = ""

@@ -100,7 +100,7 @@ def test_inactive_expired_or_nonmatching_policies_are_skipped():
 
 def test_rate_exceeds_and_unauthorized_recipient():
     rate = Policy(policy_id="p_rate", tool=["write_file"], target_glob=["/tmp/*"], condition="rate_exceeds",
-                  max_count=3, window_s=60)
+                  rate_limit=3, window_s=60)
     rows = [row("alpha", "write_file", "/tmp/s.txt", secs_ago=i) for i in range(1, 4)]
     assert run(sentry([rate], rows).evaluate(
         Action(agent_id="alpha", tool="write_file", target="/tmp/s.txt", ts=NOW))).decision == "block"

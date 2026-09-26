@@ -1,6 +1,7 @@
 import asyncio
 import os
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -65,7 +66,7 @@ def test_demo_flow_detect_block_then_policy_blocks_from_memory():
         assert d2["decision"] == "block" and d2["source"] == "jev"
         assert d2["threat_category"] == "covert_channel" and d2["incident_id"].startswith("inc_")
         inc = store.incidents[0]
-        assert inc["incident_id"] == d2["incident_id"] and inc["status"] == "open"
+        assert inc["incident_id"] == d2["incident_id"] and inc["policy_id"] is None
         assert inc["action"]["agent_id"] == "beta"
         assert [r["agent_id"] for r in inc["context"]] == ["alpha"]
         # 3. Architect/Compiler activate a policy (simulated)
@@ -145,13 +146,37 @@ def test_live_gateway_with_real_jev():
     assert fin["decision"] == "block" and fin["threat_category"] == "guardrail_exploit" and fin["incident_id"]
 
 
+def _mirror_prod_schema(uri: str, test_db: str) -> None:
+    """Copy the real DB's indexes (unique action_id, TTLs, ...) and baseline policies into the throwaway DB,
+    so the test hits the same constraints as the shared cluster."""
+    from pymongo import MongoClient
+    client = MongoClient(uri)
+    src, dst = client[os.environ.get("MONGODB_DB", "immune_harness")], client[test_db]
+    for name in ("action_ledger", "security_incidents", "security_policies"):
+        for ix in src[name].list_indexes():
+            if ix["name"] == "_id_":
+                continue
+            opts = {k: v for k, v in ix.items() if k not in ("key", "v", "ns")}
+            dst[name].create_index(list(ix["key"].items()), **opts)
+    baseline = list(src.security_policies.find({"policy_id": {"$regex": "^p_baseline"}}, {"_id": 0}))
+    if baseline:
+        dst.security_policies.insert_many(baseline)
+    client.close()
+
+
 @pytest.mark.skipif(not os.environ.get("MONGODB_URI"), reason="needs MONGODB_URI")
 def test_live_atlas_store_roundtrip():
+    uri = os.environ["MONGODB_URI"]
     db_name = f"immune_harness_test_{uuid.uuid4().hex[:6]}"
-    store = MongoStore(os.environ["MONGODB_URI"], db_name, refresh_s=0.2)
+    _mirror_prod_schema(uri, db_name)
+    store = MongoStore(uri, db_name, refresh_s=0.2)
     app, _, _ = make(store)
     try:
         with TestClient(app) as c:
+            # baseline policies seeded by Person B load and block (null window_s, rate_limit field)
+            n_baseline = len([p for p in store.active_policies() if p.policy_id.startswith("p_baseline")])
+            ssh = act(c, "beta", "read_file", "/home/user/.ssh/id_rsa")
+            # covert channel -> ledger x2 (unique action_id must not collide) + 1 incident
             act(c, "alpha", "write_file", "/tmp/shared-note.txt")
             d = act(c, "beta", "read_file", "/tmp/shared-note.txt")
             assert d["decision"] == "block" and d["incident_id"]
@@ -160,12 +185,19 @@ def test_live_atlas_store_roundtrip():
             c.portal.call(asyncio.sleep, 0.6)
             act(c, "alpha", "write_file", "/tmp/team-sync.txt")
             d2 = act(c, "gamma", "read_file", "/tmp/team-sync.txt")
-            assert d2["source"] == "policy"
-            assert c.portal.call(store.ledger.count_documents, {}) == 4
-            assert c.portal.call(store.incidents.count_documents, {}) == 1
+            ledger = c.portal.call(store.ledger.count_documents, {})
+            incidents = c.portal.call(store.incidents.count_documents, {})
+            recent = c.portal.call(store.recent, "/tmp/shared-note.txt", datetime(2000, 1, 1, tzinfo=timezone.utc))
+        print(f"\nLIVE atlas: baseline_policies={n_baseline} ssh={ssh['source']}/{ssh['policy_id']} "
+              f"ledger={ledger} incidents={incidents} recent_rows={len(recent)}")
+        if n_baseline:
+            assert ssh["decision"] == "block" and ssh["source"] == "policy"
+        assert d2["source"] == "policy" and d2["policy_id"] == "p_tmp_channel"
+        assert ledger == 5 and incidents == 1
+        assert [r["agent_id"] for r in recent] == ["beta", "alpha"]  # newest first, tz-aware ts round-trip
     finally:
         async def drop():
-            client = MongoStore(os.environ["MONGODB_URI"], db_name).client
+            client = MongoStore(uri, db_name).client
             await client.drop_database(db_name)
             await client.close()
         asyncio.run(drop())

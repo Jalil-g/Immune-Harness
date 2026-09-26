@@ -174,7 +174,7 @@ With `MONGODB_URI` in `.env` it uses Atlas. Without it, it uses the in-memory st
 - **Authorized edges** come from `agents/config.py: AUTHORIZED_EDGES` (Person C's file) if it exists, otherwise from the env var `AUTHORIZED_EDGES="orchestrator>worker1,worker1>worker2"`.
 - **`action.ts`** is set by the server when the agent doesn't send it.
 
-### Tests: `uv run pytest -q`, 28 passed, 1 skipped (Atlas, no `MONGODB_URI` yet)
+### Tests: `uv run pytest -q`, 29 passed (including live Atlas and live Jev)
 - `/health` reports the store, Jev mode, the number of active policies and the edges.
 - **Demo flow end to end** (fake Jev that checks context and edges):
   1. alpha writes, and it's allowed
@@ -207,7 +207,30 @@ With `MONGODB_URI` in `.env` it uses Atlas. Without it, it uses the in-memory st
 | alpha → beta message (no edge) | **block** 0.95 unauthorized_messaging + incident | 0.21s |
 | tool `rm` | HTTP 422 | |
 
+### Atlas check against the real cluster (MONGODB_URI added)
+Person B had already set up `immune_harness`:
+- `action_ledger`: unique `action_id`, `target_recent (target, ts desc)`, `decision_recent`, and a 7-day TTL on `ts`
+- `security_incidents`: unique `incident_id` and `ts desc`
+- `security_policies`: unique `(policy_id, version)`, `status`, and a TTL on `expires_at`
+- 2 seeded baseline policies (`p_baseline_ssh`, `p_baseline_etc`)
+
+Their schema (`db/schemas.py` on `feature/atlas`, not merged yet) didn't match my temporary contracts. **Three bugs would have hit the shared cluster:**
+1. **Startup crash:** my `create_index` used the default name, but B's index has the same keys under the name `target_recent`, which raises `IndexOptionsConflict` (code 85). I confirmed this by running the old code against the mirrored schema. Fix: create it with `name="target_recent"`, so it's a no-op when it already exists, and log instead of crashing on `OperationFailure`.
+2. **Every ledger insert after the first would fail:** the unique index on `action_id` treats a missing field as null. Fix: each ledger row gets `action_id = act_<uuid hex>`.
+3. **B's baseline policies were silently skipped:** they have `window_s: null` and use `rate_limit`. Fix: `Policy.window_s` is now `int | None`, and conditions that need a window fall back to `DEFAULT_WINDOW_S = 600`. `max_count` was renamed to `rate_limit`, and status is now `draft | active | superseded`, all matching B.
+
+I also dropped `status` from the incident document, because B's `Incident` model (`extra="forbid"`) doesn't have it. The Architect can use `policy_id`, which is null until it acts.
+
+**The Atlas test now copies production:** before running, it copies the real database's indexes and `p_baseline_*` policies into a throwaway `immune_harness_test_xxxxxx` database, then drops it afterwards. A bare test database would have hidden all three bugs.
+- **Result:** both baseline policies load, and `~/.ssh/id_rsa` is blocked by `p_baseline_ssh`. The covert write and read produce 2 ledger rows with no `action_id` collision, and 1 incident. A policy inserted into Atlas is picked up in about 0.2s and blocks the next variant. There are 5 ledger rows and 1 incident in total, and `recent()` returns rows newest-first with timezone-aware `ts`.
+- The real `immune_harness` data was untouched (0 ledger rows, 2 policies), and no test databases were left behind.
+
+**Still to agree with Person B before either branch merges** (their `db/schemas.py` uses `extra="forbid"`):
+- `Action.tool` is a `Literal` there, but main now has `tool: str` (custom tools such as `transfer_funds`).
+- `Decision` there has no `source`, `threat_category` or `category_confidence`, but the gateway writes them to the ledger and incidents.
+- Ledger rows also have `logged_at`, and incident `context` rows carry those Decision fields, so `LedgerEntry` / `Incident.from_mongo` would reject them.
+- Suggested fix: B adds these optional fields and `tool: str` to `db/schemas.py`, then `harness/contracts.py` is deleted and everyone imports from `db.schemas`. B's `harness/policy_cache.py` (change streams) should replace my 1s polling.
+
 ### Still open / next
-- Add `MONGODB_URI` to `.env` and run `uv run pytest -q -s -k atlas` to check the Atlas round-trip.
 - Open the gateway PR.
 - Person C's hook: `POST /evaluate` with `{agent_id, tool, target, args}`. Run the tool only if `decision == "allow"`. Optional `agents/config.py` exports: `AUTHORIZED_EDGES` and `AGENT_GUARDRAILS`.

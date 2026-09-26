@@ -13,6 +13,7 @@ from datetime import datetime
 
 from pydantic import ValidationError
 from pymongo import ASCENDING, DESCENDING, AsyncMongoClient
+from pymongo.errors import OperationFailure
 
 from harness.contracts import Action, Decision, Policy, utcnow
 
@@ -22,14 +23,15 @@ CONTEXT_LIMIT = 50  # max ledger rows handed to the Sentry/Jev per action
 
 
 def ledger_doc(action: Action, decision: Decision) -> dict:
-    return {**action.model_dump(), **decision.model_dump(), "logged_at": utcnow()}
+    # action_id: Atlas has a unique index on it (Person B), so every row needs its own.
+    return {**action.model_dump(), **decision.model_dump(), "action_id": f"act_{uuid.uuid4().hex}",
+            "logged_at": utcnow()}
 
 
 def incident_doc(action: Action, decision: Decision, rows: list[dict]) -> dict:
     return {
         "incident_id": f"inc_{uuid.uuid4().hex[:8]}",
         "ts": utcnow(),
-        "status": "open",  # Architect sets "policy_proposed" / "resolved"
         "action": action.model_dump(),
         "decision": decision.model_dump(),
         "context": [{k: v for k, v in r.items() if k != "_id"} for r in rows],
@@ -105,7 +107,11 @@ class MongoStore:
 
     async def start(self) -> None:
         # Only the index this gateway's hot query needs; TTLs and the rest are Person B's (db/atlas.py).
-        await self.ledger.create_index([("target", ASCENDING), ("ts", DESCENDING)])
+        # Same name as B's so it's a no-op on the shared cluster; never fail startup over an index.
+        try:
+            await self.ledger.create_index([("target", ASCENDING), ("ts", DESCENDING)], name="target_recent")
+        except OperationFailure as e:
+            log.warning("ledger index not created (%s); assuming Person B's setup provides it", e.code)
         await self.refresh_policies()
         self._task = asyncio.create_task(self._refresh_loop())
 

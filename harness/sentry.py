@@ -17,6 +17,7 @@ from harness.contracts import Action, Decision, Policy
 from harness.jev import DEFAULT_GUARDRAILS, JevScorer
 
 RISK_THRESHOLD = float(os.environ.get("RISK_THRESHOLD", "0.8"))
+DEFAULT_WINDOW_S = 600  # used when a policy leaves window_s null
 
 PolicySource = Callable[[], Iterable[Policy]]
 # (target, since) -> recent ledger rows on that target: dicts with agent_id, tool, target, ts, decision.
@@ -52,11 +53,11 @@ def policy_matches(p: Policy, action: Action, rows: list[dict],
     if p.condition == "always":
         return True
     if p.condition == "resource_touched_by_other_agent":
-        return bool(_others_on_target(action, rows, p.window_s, authorized_edges))
+        return bool(_others_on_target(action, rows, p.window_s or DEFAULT_WINDOW_S, authorized_edges))
     if p.condition == "rate_exceeds":
-        since = _as_utc(action.ts) - timedelta(seconds=p.window_s)
+        since = _as_utc(action.ts) - timedelta(seconds=p.window_s or DEFAULT_WINDOW_S)
         mine = [r for r in rows if r["agent_id"] == action.agent_id and _as_utc(r["ts"]) >= since]
-        return len(mine) + 1 > (p.max_count or 0)
+        return len(mine) + 1 > (p.rate_limit or 0)
     if p.condition == "unauthorized_recipient":
         return (action.agent_id, action.target) not in authorized_edges
     return False
