@@ -169,7 +169,7 @@ def test_jev_timeout_falls_back_fast():
 
 def test_no_api_key_uses_fallback(monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    d = run(Sentry(policies=lambda: [], context=lambda t, s: [], jev=JevScorer()).evaluate(
+    d = run(Sentry(policies=list, context=lambda t, s: [], jev=JevScorer()).evaluate(
         Action(agent_id="a", tool="write_file", target="/etc/hosts", ts=NOW)))
     assert d.source == "fallback" and d.decision == "block" and d.threat_category == "sandbox_escape"
 
@@ -208,7 +208,7 @@ def test_real_sdk_client_hits_openrouter_and_parses_answers():
         client = AsyncTypeSafeClient(
             api_key="sk-or-test", base_url="https://openrouter.ai/api", model="~typesafe/jev-latest",
             retry=RetryPolicy(max_retries=0), http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)))
-        s = Sentry(policies=lambda: [], context=ledger([row("alpha", "write_file", "/tmp/n.txt")]),
+        s = Sentry(policies=list, context=ledger([row("alpha", "write_file", "/tmp/n.txt")]),
                    jev=JevScorer(client=client))
         return await s.evaluate(Action(agent_id="beta", tool="read_file", target="/tmp/n.txt", ts=NOW))
 
@@ -240,7 +240,7 @@ LIVE_CASES = [
 
 @pytest.mark.skipif(not os.environ.get("OPENROUTER_API_KEY"), reason="needs OPENROUTER_API_KEY")
 def test_live_jev_demo_scenarios():
-    s = Sentry(policies=lambda: [], context=ledger(LIVE_ROWS), jev=JevScorer(timeout_s=10),
+    s = Sentry(policies=list, context=ledger(LIVE_ROWS), jev=JevScorer(timeout_s=10),
                authorized_edges=LIVE_EDGES)
 
     async def go():

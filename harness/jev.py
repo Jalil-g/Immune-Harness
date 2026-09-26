@@ -9,7 +9,6 @@ import asyncio
 import os
 import time
 from fnmatch import fnmatch
-from typing import Optional
 
 from pydantic import BaseModel
 from typesafe_sdk import AsyncTypeSafeClient, Choice, Noul, NoulCriteria, RetryPolicy
@@ -56,11 +55,11 @@ class JevResult(BaseModel):
     risk: float
     category: ThreatCategory
     category_confidence: float
-    noul: Optional[float] = None  # raw violates_guardrails answer
-    p_benign: Optional[float] = None  # P(threat_category == benign)
+    noul: float | None = None  # raw violates_guardrails answer
+    p_benign: float | None = None  # P(threat_category == benign)
     source: str  # "jev" or "fallback"
     latency_ms: float
-    error: Optional[str] = None
+    error: str | None = None
 
 
 def build_state(action: Action, recent: list[dict], authorized_edges: set[tuple[str, str]]) -> dict:
@@ -93,8 +92,8 @@ def heuristic(action: Action, recent: list[dict], authorized_edges: set[tuple[st
 
 
 class JevScorer:
-    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None, timeout_s: float = 3.0,
-                 client: Optional[AsyncTypeSafeClient] = None):
+    def __init__(self, api_key: str | None = None, model: str | None = None, timeout_s: float = 3.0,
+                 client: AsyncTypeSafeClient | None = None):
         self.timeout_s = timeout_s
         self.client = client
         self._injected = client is not None  # injected clients (tests) are used as-is
@@ -102,7 +101,7 @@ class JevScorer:
         self.model = model or os.environ.get("JEV_MODEL", DEFAULT_MODEL)
         self._loop = None
 
-    def _get_client(self) -> Optional[AsyncTypeSafeClient]:
+    def _get_client(self) -> AsyncTypeSafeClient | None:
         # The async client is bound to the event loop it first ran on; rebuild it if the loop changed
         # (e.g. scripts calling asyncio.run() per action), otherwise calls fail with "Event loop is closed".
         if self._injected or not self.api_key:

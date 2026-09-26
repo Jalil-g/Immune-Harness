@@ -8,9 +8,9 @@ so this works with mocks now and Person B's Atlas policy_cache later.
 """
 import os
 import time
+from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta, timezone
 from fnmatch import fnmatch
-from typing import Callable, Iterable, Optional
 
 from harness.contracts import Action, Decision, Policy
 from harness.jev import JevScorer
@@ -61,8 +61,8 @@ def policy_matches(p: Policy, action: Action, rows: list[dict],
 
 
 class Sentry:
-    def __init__(self, policies: PolicySource, context: ContextSource, jev: Optional[JevScorer] = None,
-                 authorized_edges: Optional[set[tuple[str, str]]] = None,
+    def __init__(self, policies: PolicySource, context: ContextSource, jev: JevScorer | None = None,
+                 authorized_edges: set[tuple[str, str]] | None = None,
                  threshold: float = RISK_THRESHOLD, context_window_s: int = 600):
         self.policies = policies
         self.context = context

@@ -3,7 +3,7 @@
 Temporary home until Person B merges db/schemas.py — then import from there instead.
 """
 from datetime import datetime, timezone
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -33,13 +33,13 @@ class Action(BaseModel):
 class Decision(BaseModel):
     decision: Literal["allow", "block"]
     reason: str
-    risk_score: Optional[float] = None
-    policy_id: Optional[str] = None
+    risk_score: float | None = None
+    policy_id: str | None = None
     latency_ms: float
     # Person A additions (optional, backwards compatible with the ARCHITECTURE.md contract)
     source: Literal["policy", "jev", "fallback"] = "jev"
-    threat_category: Optional[ThreatCategory] = None
-    category_confidence: Optional[float] = None
+    threat_category: ThreatCategory | None = None
+    category_confidence: float | None = None
 
 
 class Policy(BaseModel):
@@ -53,7 +53,7 @@ class Policy(BaseModel):
         "always", "resource_touched_by_other_agent", "rate_exceeds", "unauthorized_recipient"
     ] = "always"
     window_s: int = 600
-    max_count: Optional[int] = None  # only for rate_exceeds
-    expires_at: Optional[datetime] = None
-    source_incident: Optional[str] = None
+    max_count: int | None = None  # only for rate_exceeds
+    expires_at: datetime | None = None
+    source_incident: str | None = None
     rationale: str = ""
