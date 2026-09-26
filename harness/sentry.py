@@ -6,9 +6,10 @@
 Storage-agnostic: the gateway injects where policies and recent ledger rows come from,
 so this works with mocks now and Person B's Atlas policy_cache later.
 """
+import inspect
 import os
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from datetime import datetime, timedelta, timezone
 from fnmatch import fnmatch
 
@@ -18,8 +19,9 @@ from harness.jev import JevScorer
 RISK_THRESHOLD = float(os.environ.get("RISK_THRESHOLD", "0.8"))
 
 PolicySource = Callable[[], Iterable[Policy]]
-# (target, since) -> recent ledger rows on that target: dicts with agent_id, tool, target, ts, decision
-ContextSource = Callable[[str, datetime], list[dict]]
+# (target, since) -> recent ledger rows on that target: dicts with agent_id, tool, target, ts, decision.
+# May be sync or async (the Atlas store is async).
+ContextSource = Callable[[str, datetime], list[dict] | Awaitable[list[dict]]]
 
 
 def _as_utc(ts: datetime) -> datetime:
@@ -72,9 +74,15 @@ class Sentry:
         self.context_window_s = context_window_s
 
     async def evaluate(self, action: Action) -> Decision:
+        return (await self.assess(action))[0]
+
+    async def assess(self, action: Action) -> tuple[Decision, list[dict]]:
+        """Decision plus the ledger rows it was based on (the gateway stores them as incident evidence)."""
         start = time.perf_counter()
         since = _as_utc(action.ts) - timedelta(seconds=self.context_window_s)
         rows = self.context(action.target, since)
+        if inspect.isawaitable(rows):
+            rows = await rows
 
         for p in self.policies():
             if policy_matches(p, action, rows, self.authorized_edges):
@@ -82,7 +90,7 @@ class Sentry:
                     decision="block", source="policy", policy_id=p.policy_id,
                     reason=f"policy {p.policy_id} v{p.version}: {p.rationale or p.condition}",
                     latency_ms=(time.perf_counter() - start) * 1000,
-                )
+                ), rows
 
         j = await self.jev.score(action, rows, self.authorized_edges)
         block = j.risk > self.threshold
@@ -94,4 +102,4 @@ class Sentry:
             category_confidence=round(j.category_confidence, 4),
             reason=f"{j.source} risk={j.risk:.2f} category={j.category} ({j.category_confidence:.2f})",
             latency_ms=(time.perf_counter() - start) * 1000,
-        )
+        ), rows

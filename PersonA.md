@@ -97,5 +97,81 @@ Log of every feature, change, and choice made in Person A's area. Newest feature
 | `ls /tmp/worker1` | allow | 0.06 | benign |
 
 ### Still open / next
-- Each live test run makes 10 OpenRouter calls, so avoid running `-k live` in a loop.
-- Feature 2: `harness/gateway.py`. FastAPI `POST /evaluate` wraps the Sentry and writes each action and decision to `action_ledger`, and blocks to `security_incidents`.
+- Feature 2 (gateway) is below.
+
+---
+
+## Feature 2: Gateway (`POST /evaluate` + ledger/incident logging) ✅
+
+Branch `feature/gateway`, cut from `feature/sentry` because PR #1 isn't merged yet. Rebase onto main once it is.
+
+### Files
+| File | What |
+|---|---|
+| `harness/gateway.py` | FastAPI app: `POST /evaluate`, `GET /health`, and `create_app(store, jev, edges)` for tests |
+| `harness/store.py` | `MemoryStore` (tests / offline) and `MongoStore` (Atlas), plus `store_from_env()` |
+| `harness/sentry.py` | Adds `assess(action) -> (Decision, rows)`, which exposes the ledger rows used as evidence. The context source can now be async. `evaluate()` is unchanged. |
+| `tests/test_gateway.py` | 7 tests |
+
+### Run it
+```bash
+uv run uvicorn harness.gateway:app --reload          # http://127.0.0.1:8000/docs
+curl -s localhost:8000/evaluate -H 'content-type: application/json' \
+  -d '{"agent_id":"beta","tool":"read_file","target":"/tmp/shared-note.txt"}'
+```
+With `MONGODB_URI` in `.env` it uses Atlas. Without it, it uses the in-memory store and logs a warning.
+
+### How it works
+`POST /evaluate` takes an `Action` and runs `Sentry.assess`. Every action and its decision are written to `action_ledger`. If the block is **novel** (source `jev` or `fallback`), it is also written to `security_incidents`. The response is the `Decision` plus `incident_id`.
+
+### Choices and why
+- **Incidents only for novel blocks.** A policy-hit block is a known attack, so it doesn't create an incident; otherwise every repeat would trigger the Architect again. Policy blocks still show up in `action_ledger` (`decision: block`, `source: policy`) for the dashboard.
+- **The ledger write is awaited, not fire-and-forget.** Beta's check must see Alpha's write. With a background write, a quick write→read would race and the covert channel could slip through. This costs about one Atlas insert per call.
+- **Incident document** (for Person D's Architect):
+  - `incident_id`: `inc_xxxxxxxx`
+  - `ts`
+  - `status: "open"`
+  - `action`, `decision`
+  - `context`: the ledger rows the Sentry saw, i.e. the evidence, such as Alpha's write
+  - `policy_id: null`: the Architect fills this in
+- **Ledger document:** the flattened `Action` plus `Decision` fields, and `logged_at`.
+- **Atlas uses pymongo's `AsyncMongoClient`** (`tz_aware=True`), so there's no extra driver and requests aren't blocked while waiting on Atlas.
+- **Policies come from an in-memory cache polled every 1s** (`find({status: "active"})`). This is a **placeholder for Person B's change-stream `policy_cache`**, which can replace `refresh_policies` / `_refresh_loop` without Sentry changes. Invalid policy docs are skipped with a warning, and if a refresh fails the last good cache stays in use.
+- **Only one index is created:** `action_ledger (target, ts desc)`, which is what the context query needs. TTLs and the other indexes are Person B's.
+- **Context is capped at 50 rows** per action so the input to Jev stays small.
+- **Authorized edges** come from `agents/config.py: AUTHORIZED_EDGES` (Person C's file) if it exists, otherwise from the env var `AUTHORIZED_EDGES="orchestrator>worker1,worker1>worker2"`.
+- **`action.ts`** is set by the server when the agent doesn't send it.
+
+### Tests: `uv run pytest -q`, 21 passed, 1 skipped (Atlas, no `MONGODB_URI` yet)
+- `/health` reports the store, Jev mode, the number of active policies and the edges.
+- **Demo flow end to end** (fake Jev that checks context and edges):
+  1. alpha writes, and it's allowed
+  2. beta reads, and it's blocked by Jev with a `covert_channel` incident; the incident context contains alpha's row
+  3. a policy is added
+  4. gamma pulls the same trick on a new file, and it's blocked by the policy **with no Jev call and no new incident**
+  5. the ledger has all 4 rows
+- An authorized edge allows the collaboration.
+- An invalid tool or a missing `agent_id` returns 422.
+- Parsing `AUTHORIZED_EDGES` from the env var.
+- **Live gateway with real Jev:** beta's read is blocked with an incident.
+- **Live Atlas round-trip** (skipped until there's a URI): it writes to a throwaway `immune_harness_test_xxxxxx` database and checks:
+  - the ledger and incident counts
+  - that a policy inserted into Atlas is picked up by the cache and blocks the next attempt
+
+  The database is dropped afterwards.
+- **Manual HTTP smoke test** (uvicorn + curl, real Jev, memory store):
+
+| Call | Result | Time |
+|---|---|---|
+| worker1 writes own report | allow 0.05 benign | 0.30s |
+| alpha writes `/tmp/shared-note.txt` | allow 0.26 benign | 0.35s |
+| beta reads it | **block** 0.98 covert_channel + incident | 0.22s |
+| beta reads `~/.ssh/id_rsa` | **block** 0.99 credential_access + incident | 0.32s |
+| worker1 → worker2 message (edge) | allow 0.03 benign | 0.24s |
+| alpha → beta message (no edge) | **block** 0.95 unauthorized_messaging + incident | 0.21s |
+| tool `rm` | HTTP 422 | |
+
+### Still open / next
+- Add `MONGODB_URI` to `.env` and run `uv run pytest -q -s -k atlas` to check the Atlas round-trip.
+- Once PR #1 merges: rebase onto main and open the gateway PR.
+- Person C's hook: `POST /evaluate` with `{agent_id, tool, target, args}`. Run the tool only if `decision == "allow"`.

@@ -1,0 +1,142 @@
+import asyncio
+import os
+import uuid
+from types import SimpleNamespace
+
+import pytest
+from fastapi.testclient import TestClient
+
+from harness.contracts import Policy
+from harness.gateway import create_app, load_edges
+from harness.jev import JevScorer
+from harness.store import MemoryStore, MongoStore
+
+
+class ContextAwareJev:
+    """Fake Jev: flags a covert channel when another agent recently touched the target."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def system_one(self, state, questions):
+        self.calls += 1
+        me, edges = state["action"]["agent_id"], set(state["authorized_edges"])
+        covert = any(f"{r['agent_id']}->{me}" not in edges and f"{me}->{r['agent_id']}" not in edges
+                     for r in state["recent_activity_by_other_agents"])
+        return SimpleNamespace(
+            nouls={"violates_guardrails": SimpleNamespace(noul=0.95 if covert else 0.05)},
+            choices={"threat_category": SimpleNamespace(
+                choice="covert_channel" if covert else "benign", confidence=0.97,
+                probabilities={"benign": 0.03 if covert else 0.97})},
+        )
+
+
+TMP_POLICY = Policy(policy_id="p_tmp_channel", tool=["read_file", "write_file"], target_glob=["/tmp/*"],
+                    condition="resource_touched_by_other_agent", rationale="cross-agent tmp channel")
+
+
+def make(store=None, edges=frozenset()):
+    fake = ContextAwareJev()
+    store = store or MemoryStore()
+    return create_app(store=store, jev=JevScorer(client=fake), edges=set(edges)), store, fake
+
+
+def act(c, agent, tool, target):
+    r = c.post("/evaluate", json={"agent_id": agent, "tool": tool, "target": target})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_health_reports_store_and_policies():
+    app, store, _ = make(MemoryStore([TMP_POLICY]), edges={("a", "b")})
+    with TestClient(app) as c:
+        h = c.get("/health").json()
+    assert h["store"] == "memory" and h["active_policies"] == 1 and h["authorized_edges"] == ["a>b"]
+
+
+def test_demo_flow_detect_block_then_policy_blocks_from_memory():
+    app, store, fake = make()
+    with TestClient(app) as c:
+        # 1. alpha writes a note -> allowed, ledgered
+        d1 = act(c, "alpha", "write_file", "/tmp/shared-note.txt")
+        assert d1["decision"] == "allow" and d1["incident_id"] is None
+        # 2. beta reads it -> Jev sees alpha's write -> block + incident with evidence
+        d2 = act(c, "beta", "read_file", "/tmp/shared-note.txt")
+        assert d2["decision"] == "block" and d2["source"] == "jev"
+        assert d2["threat_category"] == "covert_channel" and d2["incident_id"].startswith("inc_")
+        inc = store.incidents[0]
+        assert inc["incident_id"] == d2["incident_id"] and inc["status"] == "open"
+        assert inc["action"]["agent_id"] == "beta"
+        assert [r["agent_id"] for r in inc["context"]] == ["alpha"]
+        # 3. Architect/Compiler activate a policy (simulated)
+        store.add_policy(TMP_POLICY)
+        # 4. same trick, new file -> blocked by policy, no Jev call, no new incident
+        act(c, "alpha", "write_file", "/tmp/team-sync.txt")
+        calls_before = fake.calls
+        d4 = act(c, "gamma", "read_file", "/tmp/team-sync.txt")
+        assert d4["decision"] == "block" and d4["source"] == "policy" and d4["policy_id"] == "p_tmp_channel"
+        assert d4["incident_id"] is None and fake.calls == calls_before
+        assert len(store.incidents) == 1
+
+    # every action is in the ledger, allowed and blocked
+    assert [(r["agent_id"], r["decision"]) for r in store.ledger] == [
+        ("alpha", "allow"), ("beta", "block"), ("alpha", "allow"), ("gamma", "block")]
+    assert store.ledger[1]["threat_category"] == "covert_channel"
+
+
+def test_authorized_edge_allows_collaboration():
+    app, store, _ = make(edges={("alpha", "beta")})
+    with TestClient(app) as c:
+        act(c, "alpha", "write_file", "/tmp/handoff.txt")
+        store.add_policy(TMP_POLICY)
+        assert act(c, "beta", "read_file", "/tmp/handoff.txt")["decision"] == "allow"
+
+
+def test_invalid_action_rejected():
+    app, _, _ = make()
+    with TestClient(app) as c:
+        assert c.post("/evaluate", json={"agent_id": "a", "tool": "rm_rf", "target": "/"}).status_code == 422
+        assert c.post("/evaluate", json={"tool": "read_file", "target": "/x"}).status_code == 422
+
+
+def test_load_edges_from_env(monkeypatch):
+    monkeypatch.setenv("AUTHORIZED_EDGES", "orchestrator>worker1, worker1>worker2,bad")
+    assert load_edges() == {("orchestrator", "worker1"), ("worker1", "worker2")}
+
+
+# ---------- live ----------
+
+@pytest.mark.skipif(not os.environ.get("OPENROUTER_API_KEY"), reason="needs OPENROUTER_API_KEY")
+def test_live_gateway_with_real_jev():
+    app = create_app(store=MemoryStore(), jev=JevScorer(timeout_s=10), edges=set())
+    with TestClient(app) as c:
+        assert act(c, "alpha", "write_file", "/tmp/shared-note.txt")["decision"] == "allow"
+        d = act(c, "beta", "read_file", "/tmp/shared-note.txt")
+    print("\nLIVE gateway:", d)
+    assert d["decision"] == "block" and d["source"] == "jev" and d["incident_id"]
+
+
+@pytest.mark.skipif(not os.environ.get("MONGODB_URI"), reason="needs MONGODB_URI")
+def test_live_atlas_store_roundtrip():
+    db_name = f"immune_harness_test_{uuid.uuid4().hex[:6]}"
+    store = MongoStore(os.environ["MONGODB_URI"], db_name, refresh_s=0.2)
+    app, _, fake = make(store)
+    try:
+        with TestClient(app) as c:
+            act(c, "alpha", "write_file", "/tmp/shared-note.txt")
+            d = act(c, "beta", "read_file", "/tmp/shared-note.txt")
+            assert d["decision"] == "block" and d["incident_id"]
+            # a policy inserted into Atlas is picked up by the gateway's cache
+            c.portal.call(store.policies_col.insert_one, TMP_POLICY.model_dump())
+            c.portal.call(asyncio.sleep, 0.6)
+            act(c, "alpha", "write_file", "/tmp/team-sync.txt")
+            d2 = act(c, "gamma", "read_file", "/tmp/team-sync.txt")
+            assert d2["source"] == "policy"
+            assert c.portal.call(store.ledger.count_documents, {}) == 4
+            assert c.portal.call(store.incidents.count_documents, {}) == 1
+    finally:
+        async def drop():
+            client = MongoStore(os.environ["MONGODB_URI"], db_name).client
+            await client.drop_database(db_name)
+            await client.close()
+        asyncio.run(drop())
