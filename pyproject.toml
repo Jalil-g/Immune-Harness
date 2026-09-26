@@ -12,10 +12,18 @@ dependencies = [
   "pymongo>=4.10,<5",
   "dnspython>=2.6,<3",
   "python-dotenv>=1,<2",
+  "fastapi",
+  "uvicorn",
+  "typesafe-sdk",
+  "openai",
+  "streamlit",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<10", "ruff>=0.9,<1"]
+
+[dependency-groups]
+dev = ["pytest", "httpx"]
 
 [project.scripts]
 immune-db = "db.atlas:main"
