@@ -43,8 +43,8 @@ Agent Gamma: write_file("/var/tmp/x", ...)
 
 | Component | Role | Tech |
 |---|---|---|
-| Gateway + Sentry | Intercepts every tool call; policy match, then Jev risk score | FastAPI |
-| Architect | Turns incidents into new or updated policies | LLM + Pydantic structured output |
+| Gateway + Sentry | Intercepts every tool call; policy match, then Jev risk score + threat category | FastAPI, Jev via OpenRouter |
+| Architect | Turns incidents into new or updated policies | Claude via OpenRouter + Pydantic structured output |
 | Compiler | Deny-only, scope limits, replay vs benign traffic, activate | Python |
 | Agents + Tool runner | Scripted attackers and benign workers in a sandbox folder | Python |
 | MongoDB Atlas | `security_policies`, `action_ledger`, `security_incidents` + change streams | Atlas |
@@ -56,13 +56,15 @@ Agent Gamma: write_file("/var/tmp/x", ...)
 git clone https://github.com/Jalil-g/MongoDB-Hackathon.git
 cd MongoDB-Hackathon
 git checkout -b feature/your-feature-name
-pip install fastapi uvicorn anthropic pymongo pydantic python-dotenv streamlit
+# Python 3.10+ required (typesafe-sdk)
+pip install fastapi uvicorn typesafe-sdk openai pymongo pydantic python-dotenv streamlit
+cp .env.example .env   # fill OPENROUTER_API_KEY, MONGODB_URI
 ```
 
 ## References
 
 - Incident: [Hugging Face Technical Timeline](https://huggingface.co/blog/agent-intrusion-technical-timeline)
-- [MongoDB Atlas](https://www.mongodb.com/cloud) · [Anthropic API](https://docs.anthropic.com)
+- [MongoDB Atlas](https://www.mongodb.com/cloud) · [OpenRouter](https://openrouter.ai) · [TypeSafe Jev docs](https://docs.typesafe.ai)
 
 **One-sentence pitch:** Immune Harness catches new AI-agent attacks, blocks them instantly, and rewrites its own guardrails so every agent is protected next time.
 

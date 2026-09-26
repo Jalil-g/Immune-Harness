@@ -35,10 +35,10 @@
 - **Test your code locally** before pushing
 
 ## Tech Stack
-- **Python 3.10+** (gateway, sentry, architect)
+- **Python 3.10+** (gateway, sentry, architect) — required by `typesafe-sdk`
 - **FastAPI** (lightweight API)
 - **Pydantic** (shared schemas + Architect structured output)
-- **Anthropic SDK** (Jev for fast risk eval, Claude for architect analysis)
+- **OpenRouter** (one `OPENROUTER_API_KEY`): Jev via `typesafe-sdk` (`base_url=https://openrouter.ai/api`, `model=~typesafe/jev-latest`) for risk eval; Claude via OpenAI-compatible API for architect
 - **MongoDB Atlas** (security_policies, action_ledger, security_incidents + change streams)
 - **Streamlit** (real-time dashboard)
 - **Not using:** vector search/embeddings, correlation aggregation engine, Strands/A2A
@@ -61,7 +61,7 @@ Policies ARE the memory: known attacks are blocked by policy match (~1ms); new a
 ### Collections in MongoDB
 - `security_policies` — versioned deny rules (active / superseded), hot-reloaded via change stream
 - `action_ledger` — all proposed actions (allowed & blocked); context for Jev, replay baseline for Compiler
-- `security_incidents` — blocked actions + Jev reasoning; change stream triggers the Architect
+- `security_incidents` — blocked actions + Jev answers (risk, threat category); change stream triggers the Architect
 
 ## Resources & Setup
 - GitHub repo: https://github.com/Jalil-g/MongoDB-Hackathon
