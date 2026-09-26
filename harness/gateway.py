@@ -3,6 +3,10 @@
 Flow: Action -> Sentry (policy match, else Jev) -> log to action_ledger -> if a novel block
 (Jev/fallback, not an existing policy) -> security_incidents, which triggers the Architect.
 
+Fail closed: invalid Action -> 422; policy cache unavailable or Atlas write failed -> 503.
+Agents must only execute a tool on HTTP 200 with decision == "allow".
+Decision.latency_ms = Sentry decision time (policy match or Jev), excluding persistence.
+
 Run: uv run uvicorn harness.gateway:app --reload
 """
 import logging
@@ -10,12 +14,14 @@ import os
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from pymongo.errors import PyMongoError
 
-from harness.contracts import Action, Decision
+from harness.contracts import AtlasAction, Decision
 from harness.jev import JevScorer
+from harness.policy_cache import PolicyCacheUnavailable
 from harness.sentry import Sentry
-from harness.store import MemoryStore, MongoStore, store_from_env
+from harness.store import AtlasStore, MemoryStore, store_from_env
 
 load_dotenv()
 log = logging.getLogger("harness.gateway")
@@ -45,7 +51,7 @@ def load_guardrails() -> dict[str, list[str]]:
         return {}
 
 
-def create_app(store: MemoryStore | MongoStore | None = None, jev: JevScorer | None = None,
+def create_app(store: MemoryStore | AtlasStore | None = None, jev: JevScorer | None = None,
                edges: set[tuple[str, str]] | None = None,
                guardrails: dict[str, list[str]] | None = None) -> FastAPI:
     store = store or store_from_env()
@@ -63,24 +69,37 @@ def create_app(store: MemoryStore | MongoStore | None = None, jev: JevScorer | N
     app.state.store, app.state.sentry = store, sentry
 
     @app.post("/evaluate", response_model=EvaluateResponse)
-    async def evaluate(action: Action) -> EvaluateResponse:
-        decision, rows = await sentry.assess(action)
-        # Awaited (not fire-and-forget): the next agent's check must see this row, or a
-        # write->read covert channel could slip through a race.
-        await store.log_action(action, decision)
-        incident_id = None
-        if decision.decision == "block" and decision.source != "policy":
-            incident_id = await store.log_incident(action, decision, rows)
+    async def evaluate(action: AtlasAction) -> EvaluateResponse:
+        try:
+            decision, rows = await sentry.assess(action)
+        except PolicyCacheUnavailable:
+            raise HTTPException(503, "policy cache unavailable; do not execute") from None
+        try:
+            # Awaited (not fire-and-forget): the next agent's check must see this row, or a
+            # write->read covert channel could slip through a race.
+            await store.log_action(action, decision)
+            incident_id = None
+            if decision.decision == "block" and decision.source != "policy":
+                incident_id = await store.log_incident(action, decision, rows)
+        except PyMongoError as e:
+            log.error("persistence failed (%s); failing closed", type(e).__name__)
+            raise HTTPException(503, "action ledger unavailable; do not execute") from None
             log.warning("incident %s: %s %s %s — %s", incident_id, action.agent_id, action.tool,
                         action.target, decision.reason)
         return EvaluateResponse(**decision.model_dump(), incident_id=incident_id)
 
     @app.get("/health")
     async def health() -> dict:
+        try:
+            n_policies = len(store.active_policies())
+        except PolicyCacheUnavailable:
+            n_policies = None
         return {
             "store": store.kind,
+            "policy_cache_healthy": store.healthy,
+            "policy_cache_error": getattr(getattr(store, "cache", None), "last_error", None),
             "jev": "openrouter" if sentry.jev.api_key else "fallback-only",
-            "active_policies": len(store.active_policies()),
+            "active_policies": n_policies,
             "authorized_edges": sorted(f"{a}>{b}" for a, b in sentry.authorized_edges),
             "agents_with_guardrails": sorted(k for k in sentry.guardrails if k != "*"),
         }

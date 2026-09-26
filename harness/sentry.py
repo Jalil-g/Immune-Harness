@@ -4,14 +4,14 @@
 2. Otherwise ask Jev (via OpenRouter); block if violates_guardrails > threshold.
 
 Storage-agnostic: the gateway injects where policies and recent ledger rows come from,
-so this works with mocks now and Person B's Atlas policy_cache later.
+so this works with MemoryStore in tests and Person B's PolicyCache (Atlas change stream) in prod.
 """
 import inspect
 import os
 import time
 from collections.abc import Awaitable, Callable, Iterable
-from datetime import datetime, timedelta, timezone
-from fnmatch import fnmatch
+from datetime import UTC, datetime, timedelta
+from fnmatch import fnmatchcase
 
 from harness.contracts import Action, Decision, Policy
 from harness.jev import DEFAULT_GUARDRAILS, JevScorer
@@ -26,7 +26,7 @@ ContextSource = Callable[[str, datetime], list[dict] | Awaitable[list[dict]]]
 
 
 def _as_utc(ts: datetime) -> datetime:
-    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+    return ts if ts.tzinfo else ts.replace(tzinfo=UTC)
 
 
 def _others_on_target(action: Action, rows: list[dict], window_s: int,
@@ -35,6 +35,7 @@ def _others_on_target(action: Action, rows: list[dict], window_s: int,
     return [
         r for r in rows
         if r["target"] == action.target
+        and r.get("decision") == "allow"  # a blocked attempt never touched the resource
         and r["agent_id"] != action.agent_id
         and _as_utc(r["ts"]) >= since
         and (r["agent_id"], action.agent_id) not in authorized_edges
@@ -44,11 +45,12 @@ def _others_on_target(action: Action, rows: list[dict], window_s: int,
 
 def policy_matches(p: Policy, action: Action, rows: list[dict],
                    authorized_edges: set[tuple[str, str]]) -> bool:
+    """Condition semantics follow PersonB.md (D's Compiler replay should import this function)."""
     if p.status != "active" or p.effect != "deny":
         return False
     if p.expires_at and _as_utc(p.expires_at) <= _as_utc(action.ts):
         return False
-    if action.tool not in p.tool or not any(fnmatch(action.target, g) for g in p.target_glob):
+    if action.tool not in p.tool or not any(fnmatchcase(action.target, g) for g in p.target_glob):
         return False
     if p.condition == "always":
         return True
@@ -56,7 +58,9 @@ def policy_matches(p: Policy, action: Action, rows: list[dict],
         return bool(_others_on_target(action, rows, p.window_s or DEFAULT_WINDOW_S, authorized_edges))
     if p.condition == "rate_exceeds":
         since = _as_utc(action.ts) - timedelta(seconds=p.window_s or DEFAULT_WINDOW_S)
-        mine = [r for r in rows if r["agent_id"] == action.agent_id and _as_utc(r["ts"]) >= since]
+        mine = [r for r in rows if r["agent_id"] == action.agent_id and r["tool"] == action.tool
+                and r["target"] == action.target and r.get("decision") == "allow"
+                and _as_utc(r["ts"]) >= since]
         return len(mine) + 1 > (p.rate_limit or 0)
     if p.condition == "unauthorized_recipient":
         return (action.agent_id, action.target) not in authorized_edges

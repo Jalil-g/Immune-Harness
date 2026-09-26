@@ -1,6 +1,6 @@
 import asyncio
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -9,7 +9,7 @@ from harness.contracts import Action, Policy
 from harness.jev import DEFAULT_GUARDRAILS, MAX_ARG_CHARS, JevScorer, heuristic
 from harness.sentry import Sentry
 
-NOW = datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 9, 26, 12, 0, tzinfo=UTC)
 
 
 def run(coro):
@@ -47,9 +47,11 @@ class FakeJevClient:
         )
 
 
-TMP_POLICY = Policy(policy_id="p_tmp_channel", tool=["read_file", "write_file"], target_glob=["/tmp/*"],
-                    condition="resource_touched_by_other_agent", rationale="cross-agent tmp channel")
-SSH_POLICY = Policy(policy_id="p_ssh", tool=["read_file"], target_glob=["*/.ssh/*"], condition="always")
+TMP_POLICY = Policy(policy_id="p_tmp_channel", status="active", tool=["read_file", "write_file"],
+                    target_glob=["/tmp/*"], condition="resource_touched_by_other_agent", window_s=600,
+                    rationale="cross-agent tmp channel")
+SSH_POLICY = Policy(policy_id="p_ssh", status="active", tool=["read_file"], target_glob=["*/.ssh/*"],
+                    condition="always", rationale="ssh keys")
 
 
 def sentry(policies=(), rows=(), client=None, edges=None):
@@ -99,7 +101,8 @@ def test_inactive_expired_or_nonmatching_policies_are_skipped():
 
 
 def test_rate_exceeds_and_unauthorized_recipient():
-    rate = Policy(policy_id="p_rate", tool=["write_file"], target_glob=["/tmp/*"], condition="rate_exceeds",
+    rate = Policy(policy_id="p_rate", status="active", rationale="rate", tool=["write_file"],
+                  target_glob=["/tmp/*"], condition="rate_exceeds",
                   rate_limit=3, window_s=60)
     rows = [row("alpha", "write_file", "/tmp/s.txt", secs_ago=i) for i in range(1, 4)]
     assert run(sentry([rate], rows).evaluate(
@@ -107,7 +110,8 @@ def test_rate_exceeds_and_unauthorized_recipient():
     assert run(sentry([rate], rows[:2]).evaluate(
         Action(agent_id="alpha", tool="write_file", target="/tmp/s.txt", ts=NOW))).decision == "allow"
 
-    msg = Policy(policy_id="p_msg", tool=["send_message"], target_glob=["*"], condition="unauthorized_recipient")
+    msg = Policy(policy_id="p_msg", status="active", tool=["send_message"], target_glob=["*"],
+                 condition="unauthorized_recipient", rationale="unauthorized messaging")
     edges = {("alpha", "worker1")}
     assert run(sentry([msg], edges=edges).evaluate(
         Action(agent_id="alpha", tool="send_message", target="beta", ts=NOW))).decision == "block"
@@ -186,7 +190,7 @@ def test_star_guardrails_can_be_overridden_and_args_are_clipped():
     assert len(state["action"]["args"]["nested"]["k"]) == MAX_ARG_CHARS
 
 
-LOCK_POLICY = Policy(policy_id="p_lockfile", tool=["write_file"], target_glob=["/tmp/*.lock"],
+LOCK_POLICY = Policy(policy_id="p_lockfile", status="active", tool=["write_file"], target_glob=["/tmp/*.lock"],
                      rationale="Agents signalled each other by creating lock files in shared temp dirs (inc_42).")
 
 

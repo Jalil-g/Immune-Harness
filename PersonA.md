@@ -234,3 +234,15 @@ I also dropped `status` from the incident document, because B's `Incident` model
 ### Still open / next
 - Open the gateway PR.
 - Person C's hook: `POST /evaluate` with `{agent_id, tool, target, args}`. Run the tool only if `decision == "allow"`. Optional `agents/config.py` exports: `AUTHORIZED_EDGES` and `AGENT_GUARDRAILS`.
+
+## Update: gateway on Person B's Atlas layer (branch `feature/gateway-atlas`)
+
+`feature/gateway` + `origin/feature/atlas` merged. The gateway now uses B's code:
+
+- **Schemas:** `harness/contracts.py` re-exports `db.schemas.Policy` and `utc_now`. `Decision` subclasses `db.schemas.Decision` and adds only `source`, `threat_category`, `category_confidence`. `to_atlas()` removes those before a write because B's models reject unknown fields. The threat category stays in `reason`.
+- **HTTP input:** `POST /evaluate` validates with `db.schemas.Action`. Only the 5 sandbox tools are accepted, timestamps must include a timezone, and unknown fields are rejected. Anything else gets a 422. Custom tools like `transfer_funds` are rejected at the gateway, though the Sentry still handles any tool name. For finance cases, use `http_get` with `args` for now, or have B add tools to `Tool`.
+- **Store:** `MongoStore` is replaced by `AtlasStore`. It keeps one `db.atlas.Atlas` client and one `PolicyCache` (change stream, no polling). Sync PyMongo calls run through `asyncio.to_thread`. Ledger rows are `LedgerEntry.from_action(...).to_mongo()` and incidents are `Incident(...)`, with context rows validated as `LedgerEntry`.
+- **Fail closed:** if `PolicyCacheUnavailable` is raised or an Atlas write fails, the gateway returns **503** and the agent must not run the tool. `/health` now shows `policy_cache_healthy` / `policy_cache_error`.
+- **Matcher follows PersonB.md:** globs use `fnmatchcase`. `resource_touched_by_other_agent` only counts *allowed* earlier actions by another agent. `rate_exceeds` counts allowed actions by the same agent, tool and target. One difference from B remains: authorized edges exempt file sharing in either direction.
+- **Incidents:** only novel blocks (Jev/fallback) create incidents. Policy blocks, including the baselines, write to the ledger only, so they don't re-trigger the Architect.
+- **Setup:** run `uv run python -m db.atlas bootstrap` once per database (indexes + baseline policies). Then start with `uv run uvicorn harness.gateway:app`.

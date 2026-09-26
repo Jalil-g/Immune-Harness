@@ -1,7 +1,10 @@
 .venv/
-.env
 __pycache__/
-*.pyc
+*.py[cod]
 .pytest_cache/
-sandbox/*
-!sandbox/.gitkeep
+.ruff_cache/
+*.egg-info/
+.env
+.env.*
+!.env.example
+.DS_Store

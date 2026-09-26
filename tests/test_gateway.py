@@ -1,16 +1,19 @@
 import asyncio
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
+from db.atlas import AtlasSettings, baseline_policies
+from db.schemas import Incident, LedgerEntry
 from harness.contracts import Policy
 from harness.gateway import create_app, load_edges
 from harness.jev import JevScorer
-from harness.store import MemoryStore, MongoStore
+from harness.policy_cache import PolicyCacheUnavailable
+from harness.store import AtlasStore, MemoryStore
 
 
 class ContextAwareJev:
@@ -32,8 +35,9 @@ class ContextAwareJev:
         )
 
 
-TMP_POLICY = Policy(policy_id="p_tmp_channel", tool=["read_file", "write_file"], target_glob=["/tmp/*"],
-                    condition="resource_touched_by_other_agent", rationale="cross-agent tmp channel")
+TMP_POLICY = Policy(policy_id="p_tmp_channel", status="active", tool=["read_file", "write_file"],
+                    target_glob=["/tmp/*"], condition="resource_touched_by_other_agent", window_s=600,
+                    rationale="cross-agent tmp channel")
 
 
 def make(store=None, edges=frozenset()):
@@ -82,7 +86,49 @@ def test_demo_flow_detect_block_then_policy_blocks_from_memory():
     # every action is in the ledger, allowed and blocked
     assert [(r["agent_id"], r["decision"]) for r in store.ledger] == [
         ("alpha", "allow"), ("beta", "block"), ("alpha", "allow"), ("gamma", "block")]
-    assert store.ledger[1]["threat_category"] == "covert_channel"
+    assert "covert_channel" in store.ledger[1]["reason"]
+    # every document validates against Person B's schemas (what D's Architect/Compiler/dashboard read)
+    for r in store.ledger:
+        LedgerEntry.from_mongo(r)
+    assert Incident.from_mongo(store.incidents[0]).context[0].agent_id == "alpha"
+
+
+def test_baseline_policies_block_via_policy_fast_path():
+    app, store, fake = make(MemoryStore(list(baseline_policies())))
+    with TestClient(app) as c:
+        ssh = act(c, "beta", "read_file", "/home/user/.ssh/id_rsa")
+        etc = act(c, "beta", "write_file", "/etc/hosts")
+    assert (ssh["decision"], ssh["source"], ssh["policy_id"]) == ("block", "policy", "p_baseline_ssh")
+    assert (etc["decision"], etc["policy_id"]) == ("block", "p_baseline_etc")
+    assert fake.calls == 0 and store.incidents == []  # known attacks don't re-trigger the Architect
+
+
+def test_policy_cache_unavailable_fails_closed_with_503():
+    class DownStore(MemoryStore):
+        healthy = False
+
+        def active_policies(self):
+            raise PolicyCacheUnavailable("down")
+
+    app, store, _ = make(DownStore())
+    with TestClient(app) as c:
+        r = c.post("/evaluate", json={"agent_id": "a", "tool": "read_file", "target": "/tmp/x"})
+        h = c.get("/health").json()
+    assert r.status_code == 503 and store.ledger == []
+    assert h["policy_cache_healthy"] is False and h["active_policies"] is None
+
+
+def test_ledger_write_failure_fails_closed_with_503():
+    from pymongo.errors import AutoReconnect
+
+    class BrokenStore(MemoryStore):
+        async def log_action(self, action, decision):
+            raise AutoReconnect("atlas down")
+
+    app, _, _ = make(BrokenStore())
+    with TestClient(app) as c:
+        r = c.post("/evaluate", json={"agent_id": "a", "tool": "read_file", "target": "/tmp/x"})
+    assert r.status_code == 503
 
 
 def test_authorized_edge_allows_collaboration():
@@ -93,17 +139,19 @@ def test_authorized_edge_allows_collaboration():
         assert act(c, "beta", "read_file", "/tmp/handoff.txt")["decision"] == "allow"
 
 
-def test_invalid_action_rejected_but_custom_tools_allowed():
+def test_invalid_action_rejected_422():
     app, store, _ = make()
     with TestClient(app) as c:
-        # missing fields / wrong types -> 422
-        assert c.post("/evaluate", json={"tool": "read_file", "target": "/x"}).status_code == 422
-        assert c.post("/evaluate", json={"agent_id": "a", "target": "/x"}).status_code == 422
-        assert c.post("/evaluate", json={"agent_id": "a", "tool": "x", "target": "/x", "args": "no"}).status_code == 422
-        # any tool name is valid (e.g. a finance agent's) and gets judged + ledgered with its args
-        d = act(c, "fin", "transfer_funds", "ACC-100")
-        assert d["decision"] == "allow"
-    assert store.ledger[-1]["tool"] == "transfer_funds"
+        # missing fields / wrong types / unknown tool (db.schemas Tool) / naive ts / extra field -> 422
+        bad = [{"tool": "read_file", "target": "/x"},
+               {"agent_id": "a", "target": "/x"},
+               {"agent_id": "a", "tool": "read_file", "target": "/x", "args": "no"},
+               {"agent_id": "a", "tool": "transfer_funds", "target": "ACC-100"},
+               {"agent_id": "a", "tool": "read_file", "target": "/x", "ts": "2026-09-26T12:00:00"},
+               {"agent_id": "a", "tool": "read_file", "target": "/x", "extra": 1}]
+        for body in bad:
+            assert c.post("/evaluate", json=body).status_code == 422, body
+    assert store.ledger == []
 
 
 def test_guardrails_and_args_reach_jev_through_gateway():
@@ -118,8 +166,8 @@ def test_guardrails_and_args_reach_jev_through_gateway():
                      guardrails={"fin": ["Transfers above $1,000 need manager approval."]})
     with TestClient(app) as c:
         assert c.get("/health").json()["agents_with_guardrails"] == ["fin"]
-        c.post("/evaluate", json={"agent_id": "fin", "tool": "transfer_funds", "target": "ACC-100",
-                                  "args": {"amount": 50000}})
+        c.post("/evaluate", json={"agent_id": "fin", "tool": "http_get",
+                                  "target": "https://bank.internal/transfer/ACC-100", "args": {"amount": 50000}})
     assert seen["action"]["args"] == {"amount": 50000}
     assert seen["agent_guardrails"][-1] == "Transfers above $1,000 need manager approval."
 
@@ -139,65 +187,51 @@ def test_live_gateway_with_real_jev():
     with TestClient(app) as c:
         assert act(c, "alpha", "write_file", "/tmp/shared-note.txt")["decision"] == "allow"
         d = act(c, "beta", "read_file", "/tmp/shared-note.txt")
-        fin = c.post("/evaluate", json={"agent_id": "fin", "tool": "transfer_funds", "target": "ACC-100",
+        fin = c.post("/evaluate", json={"agent_id": "fin", "tool": "http_get",
+                                        "target": "https://bank.internal/transfer/ACC-100",
                                         "args": {"amount": 50000}}).json()
     print("\nLIVE gateway covert:", d, "\nLIVE gateway finance:", fin)
     assert d["decision"] == "block" and d["source"] == "jev" and d["incident_id"]
     assert fin["decision"] == "block" and fin["threat_category"] == "guardrail_exploit" and fin["incident_id"]
 
 
-def _mirror_prod_schema(uri: str, test_db: str) -> None:
-    """Copy the real DB's indexes (unique action_id, TTLs, ...) and baseline policies into the throwaway DB,
-    so the test hits the same constraints as the shared cluster."""
-    from pymongo import MongoClient
-    client = MongoClient(uri)
-    src, dst = client[os.environ.get("MONGODB_DB", "immune_harness")], client[test_db]
-    for name in ("action_ledger", "security_incidents", "security_policies"):
-        for ix in src[name].list_indexes():
-            if ix["name"] == "_id_":
-                continue
-            opts = {k: v for k, v in ix.items() if k not in ("key", "v", "ns")}
-            dst[name].create_index(list(ix["key"].items()), **opts)
-    baseline = list(src.security_policies.find({"policy_id": {"$regex": "^p_baseline"}}, {"_id": 0}))
-    if baseline:
-        dst.security_policies.insert_many(baseline)
-    client.close()
-
-
 @pytest.mark.skipif(not os.environ.get("MONGODB_URI"), reason="needs MONGODB_URI")
 def test_live_atlas_store_roundtrip():
-    uri = os.environ["MONGODB_URI"]
-    db_name = f"immune_harness_test_{uuid.uuid4().hex[:6]}"
-    _mirror_prod_schema(uri, db_name)
-    store = MongoStore(uri, db_name, refresh_s=0.2)
+    """Real Atlas, throwaway DB set up by Person B's bootstrap (same indexes + baseline policies as prod)."""
+    settings = AtlasSettings(uri=os.environ["MONGODB_URI"],
+                             database=f"immune_harness_test_{uuid.uuid4().hex[:6]}")
+    store = AtlasStore(settings)
+    store.atlas.bootstrap()
     app, _, _ = make(store)
     try:
         with TestClient(app) as c:
-            # baseline policies seeded by Person B load and block (null window_s, rate_limit field)
-            n_baseline = len([p for p in store.active_policies() if p.policy_id.startswith("p_baseline")])
+            assert c.get("/health").json()["policy_cache_healthy"] is True
             ssh = act(c, "beta", "read_file", "/home/user/.ssh/id_rsa")
             # covert channel -> ledger x2 (unique action_id must not collide) + 1 incident
             act(c, "alpha", "write_file", "/tmp/shared-note.txt")
             d = act(c, "beta", "read_file", "/tmp/shared-note.txt")
             assert d["decision"] == "block" and d["incident_id"]
-            # a policy inserted into Atlas is picked up by the gateway's cache
-            c.portal.call(store.policies_col.insert_one, TMP_POLICY.model_dump())
-            c.portal.call(asyncio.sleep, 0.6)
+            # a policy inserted into Atlas reaches the gateway via B's change-stream cache, no restart
+            store.atlas.security_policies.insert_one(TMP_POLICY.to_mongo())
+            for _ in range(50):
+                if any(p.policy_id == "p_tmp_channel" for p in store.active_policies()):
+                    break
+                c.portal.call(asyncio.sleep, 0.1)
             act(c, "alpha", "write_file", "/tmp/team-sync.txt")
             d2 = act(c, "gamma", "read_file", "/tmp/team-sync.txt")
-            ledger = c.portal.call(store.ledger.count_documents, {})
-            incidents = c.portal.call(store.incidents.count_documents, {})
-            recent = c.portal.call(store.recent, "/tmp/shared-note.txt", datetime(2000, 1, 1, tzinfo=timezone.utc))
-        print(f"\nLIVE atlas: baseline_policies={n_baseline} ssh={ssh['source']}/{ssh['policy_id']} "
-              f"ledger={ledger} incidents={incidents} recent_rows={len(recent)}")
-        if n_baseline:
-            assert ssh["decision"] == "block" and ssh["source"] == "policy"
+            recent = c.portal.call(store.recent, "/tmp/shared-note.txt", datetime(2000, 1, 1, tzinfo=UTC))
+            ledger = list(store.atlas.action_ledger.find())
+            incidents = list(store.atlas.security_incidents.find())
+        print(f"\nLIVE atlas: ssh={ssh['source']}/{ssh['policy_id']} ledger={len(ledger)} "
+              f"incidents={len(incidents)} recent_rows={len(recent)}")
+        assert ssh["decision"] == "block" and ssh["policy_id"] == "p_baseline_ssh"
         assert d2["source"] == "policy" and d2["policy_id"] == "p_tmp_channel"
-        assert ledger == 5 and incidents == 1
+        assert len(ledger) == 5 and len(incidents) == 1
+        for r in ledger:
+            LedgerEntry.from_mongo(r)
+        assert Incident.from_mongo(incidents[0]).incident_id == d["incident_id"]
         assert [r["agent_id"] for r in recent] == ["beta", "alpha"]  # newest first, tz-aware ts round-trip
     finally:
-        async def drop():
-            client = MongoStore(uri, db_name).client
-            await client.drop_database(db_name)
-            await client.close()
-        asyncio.run(drop())
+        from pymongo import MongoClient
+        with MongoClient(settings.uri) as client:
+            client.drop_database(settings.database)
