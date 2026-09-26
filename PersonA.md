@@ -130,7 +130,11 @@ Log of every feature, change, and choice made in Person A's area. Newest feature
 
 ## Feature 2: Gateway (`POST /evaluate` + ledger/incident logging) ✅
 
-Branch `feature/gateway`, cut from `feature/sentry` because PR #1 isn't merged yet. Rebase onto main once it is.
+Branch `feature/gateway`, cut from `feature/sentry` before PR #1 merged.
+
+**Synced with main after PR #1 merged:** ran `git pull origin main`, a merge rather than a rebase, per CLAUDE.md, so no force-push was needed. It merged cleanly: `Sentry.assess()` from this branch and main's learned policies, guardrails and args combined without conflicts. Follow-ups:
+- **Guardrails were never reaching the gateway's Sentry,** so every agent only got the defaults. Added `load_guardrails()`, which reads `agents/config.py: AGENT_GUARDRAILS = {agent_id: [...]}` (Person C's file) if it exists, and a `create_app(guardrails=...)` parameter. `/health` now lists `agents_with_guardrails`.
+- **Fixed a test broken by main's `tool: str` change.** A custom tool (`rm_rf`, `transfer_funds`) is now accepted and judged by Jev instead of returning 422. The test now checks that missing fields or a bad `args` type still return 422 and that custom tools are allowed and logged in the ledger.
 
 ### Files
 | File | What |
@@ -138,7 +142,7 @@ Branch `feature/gateway`, cut from `feature/sentry` because PR #1 isn't merged y
 | `harness/gateway.py` | FastAPI app: `POST /evaluate`, `GET /health`, and `create_app(store, jev, edges)` for tests |
 | `harness/store.py` | `MemoryStore` (tests / offline) and `MongoStore` (Atlas), plus `store_from_env()` |
 | `harness/sentry.py` | Adds `assess(action) -> (Decision, rows)`, which exposes the ledger rows used as evidence. The context source can now be async. `evaluate()` is unchanged. |
-| `tests/test_gateway.py` | 7 tests |
+| `tests/test_gateway.py` | 8 tests |
 
 ### Run it
 ```bash
@@ -166,10 +170,11 @@ With `MONGODB_URI` in `.env` it uses Atlas. Without it, it uses the in-memory st
 - **Policies come from an in-memory cache polled every 1s** (`find({status: "active"})`). This is a **placeholder for Person B's change-stream `policy_cache`**, which can replace `refresh_policies` / `_refresh_loop` without Sentry changes. Invalid policy docs are skipped with a warning, and if a refresh fails the last good cache stays in use.
 - **Only one index is created:** `action_ledger (target, ts desc)`, which is what the context query needs. TTLs and the other indexes are Person B's.
 - **Context is capped at 50 rows** per action so the input to Jev stays small.
+- **Per-agent guardrails** come from `agents/config.py: AGENT_GUARDRAILS` if it exists, otherwise only the defaults apply.
 - **Authorized edges** come from `agents/config.py: AUTHORIZED_EDGES` (Person C's file) if it exists, otherwise from the env var `AUTHORIZED_EDGES="orchestrator>worker1,worker1>worker2"`.
 - **`action.ts`** is set by the server when the agent doesn't send it.
 
-### Tests: `uv run pytest -q`, 21 passed, 1 skipped (Atlas, no `MONGODB_URI` yet)
+### Tests: `uv run pytest -q`, 28 passed, 1 skipped (Atlas, no `MONGODB_URI` yet)
 - `/health` reports the store, Jev mode, the number of active policies and the edges.
 - **Demo flow end to end** (fake Jev that checks context and edges):
   1. alpha writes, and it's allowed
@@ -178,9 +183,13 @@ With `MONGODB_URI` in `.env` it uses Atlas. Without it, it uses the in-memory st
   4. gamma pulls the same trick on a new file, and it's blocked by the policy **with no Jev call and no new incident**
   5. the ledger has all 4 rows
 - An authorized edge allows the collaboration.
-- An invalid tool or a missing `agent_id` returns 422.
+- Missing fields or a bad `args` type return 422. Custom tools are accepted, judged and logged in the ledger.
+- Guardrails and args reach Jev through the gateway.
 - Parsing `AUTHORIZED_EDGES` from the env var.
-- **Live gateway with real Jev:** beta's read is blocked with an incident.
+- **Live gateway with real Jev:**
+  - beta's covert read → block, `covert_channel` 0.99, incident
+  - a $50k `transfer_funds` from a finance agent with an approval guardrail → block, `guardrail_exploit` 1.0, incident
+  - about 180–210ms each
 - **Live Atlas round-trip** (skipped until there's a URI): it writes to a throwaway `immune_harness_test_xxxxxx` database and checks:
   - the ledger and incident counts
   - that a policy inserted into Atlas is picked up by the cache and blocks the next attempt
@@ -200,5 +209,5 @@ With `MONGODB_URI` in `.env` it uses Atlas. Without it, it uses the in-memory st
 
 ### Still open / next
 - Add `MONGODB_URI` to `.env` and run `uv run pytest -q -s -k atlas` to check the Atlas round-trip.
-- Once PR #1 merges: rebase onto main and open the gateway PR.
-- Person C's hook: `POST /evaluate` with `{agent_id, tool, target, args}`. Run the tool only if `decision == "allow"`.
+- Open the gateway PR.
+- Person C's hook: `POST /evaluate` with `{agent_id, tool, target, args}`. Run the tool only if `decision == "allow"`. Optional `agents/config.py` exports: `AUTHORIZED_EDGES` and `AGENT_GUARDRAILS`.

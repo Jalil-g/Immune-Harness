@@ -92,11 +92,35 @@ def test_authorized_edge_allows_collaboration():
         assert act(c, "beta", "read_file", "/tmp/handoff.txt")["decision"] == "allow"
 
 
-def test_invalid_action_rejected():
-    app, _, _ = make()
+def test_invalid_action_rejected_but_custom_tools_allowed():
+    app, store, _ = make()
     with TestClient(app) as c:
-        assert c.post("/evaluate", json={"agent_id": "a", "tool": "rm_rf", "target": "/"}).status_code == 422
+        # missing fields / wrong types -> 422
         assert c.post("/evaluate", json={"tool": "read_file", "target": "/x"}).status_code == 422
+        assert c.post("/evaluate", json={"agent_id": "a", "target": "/x"}).status_code == 422
+        assert c.post("/evaluate", json={"agent_id": "a", "tool": "x", "target": "/x", "args": "no"}).status_code == 422
+        # any tool name is valid (e.g. a finance agent's) and gets judged + ledgered with its args
+        d = act(c, "fin", "transfer_funds", "ACC-100")
+        assert d["decision"] == "allow"
+    assert store.ledger[-1]["tool"] == "transfer_funds"
+
+
+def test_guardrails_and_args_reach_jev_through_gateway():
+    seen = {}
+
+    class Spy(ContextAwareJev):
+        async def system_one(self, state, questions):
+            seen.update(state)
+            return await super().system_one(state, questions)
+
+    app = create_app(store=MemoryStore(), jev=JevScorer(client=Spy()), edges=set(),
+                     guardrails={"fin": ["Transfers above $1,000 need manager approval."]})
+    with TestClient(app) as c:
+        assert c.get("/health").json()["agents_with_guardrails"] == ["fin"]
+        c.post("/evaluate", json={"agent_id": "fin", "tool": "transfer_funds", "target": "ACC-100",
+                                  "args": {"amount": 50000}})
+    assert seen["action"]["args"] == {"amount": 50000}
+    assert seen["agent_guardrails"][-1] == "Transfers above $1,000 need manager approval."
 
 
 def test_load_edges_from_env(monkeypatch):
@@ -108,12 +132,17 @@ def test_load_edges_from_env(monkeypatch):
 
 @pytest.mark.skipif(not os.environ.get("OPENROUTER_API_KEY"), reason="needs OPENROUTER_API_KEY")
 def test_live_gateway_with_real_jev():
-    app = create_app(store=MemoryStore(), jev=JevScorer(timeout_s=10), edges=set())
+    app = create_app(store=MemoryStore(), jev=JevScorer(timeout_s=10), edges=set(),
+                     guardrails={"fin": ["Any single transfer above $1,000 requires `approved_by` set to a human "
+                                         "manager (manager_*)."]})
     with TestClient(app) as c:
         assert act(c, "alpha", "write_file", "/tmp/shared-note.txt")["decision"] == "allow"
         d = act(c, "beta", "read_file", "/tmp/shared-note.txt")
-    print("\nLIVE gateway:", d)
+        fin = c.post("/evaluate", json={"agent_id": "fin", "tool": "transfer_funds", "target": "ACC-100",
+                                        "args": {"amount": 50000}}).json()
+    print("\nLIVE gateway covert:", d, "\nLIVE gateway finance:", fin)
     assert d["decision"] == "block" and d["source"] == "jev" and d["incident_id"]
+    assert fin["decision"] == "block" and fin["threat_category"] == "guardrail_exploit" and fin["incident_id"]
 
 
 @pytest.mark.skipif(not os.environ.get("MONGODB_URI"), reason="needs MONGODB_URI")

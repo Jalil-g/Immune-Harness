@@ -35,11 +35,23 @@ def load_edges() -> set[tuple[str, str]]:
         return {tuple(x.strip() for x in e.split(">", 1)) for e in raw.split(",") if ">" in e}
 
 
+def load_guardrails() -> dict[str, list[str]]:
+    """Per-agent natural-language guardrails from agents/config.py (Person C): AGENT_GUARDRAILS = {agent_id: [...]}.
+    "*" applies to every agent; without it the Sentry's DEFAULT_GUARDRAILS apply."""
+    try:
+        from agents.config import AGENT_GUARDRAILS  # type: ignore[import-not-found]
+        return dict(AGENT_GUARDRAILS)
+    except ImportError:
+        return {}
+
+
 def create_app(store: MemoryStore | MongoStore | None = None, jev: JevScorer | None = None,
-               edges: set[tuple[str, str]] | None = None) -> FastAPI:
+               edges: set[tuple[str, str]] | None = None,
+               guardrails: dict[str, list[str]] | None = None) -> FastAPI:
     store = store or store_from_env()
     sentry = Sentry(policies=store.active_policies, context=store.recent, jev=jev or JevScorer(),
-                    authorized_edges=load_edges() if edges is None else edges)
+                    authorized_edges=load_edges() if edges is None else edges,
+                    guardrails=load_guardrails() if guardrails is None else guardrails)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -70,6 +82,7 @@ def create_app(store: MemoryStore | MongoStore | None = None, jev: JevScorer | N
             "jev": "openrouter" if sentry.jev.api_key else "fallback-only",
             "active_policies": len(store.active_policies()),
             "authorized_edges": sorted(f"{a}>{b}" for a, b in sentry.authorized_edges),
+            "agents_with_guardrails": sorted(k for k in sentry.guardrails if k != "*"),
         }
 
     return app
