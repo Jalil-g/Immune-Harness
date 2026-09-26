@@ -10,3 +10,6 @@ __pycache__/
 .DS_Store
 sandbox/*
 !sandbox/.gitkeep
+
+# ./scripts/demo.sh logs
+.demo-logs/

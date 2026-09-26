@@ -305,6 +305,35 @@ Presentation-layer only; the data flow and both modes are unchanged.
 
 ---
 
+## Feature 9: one-command demo + adjustable, faster scenarios ✅
+
+- **`./scripts/demo.sh`** runs everything:
+  1. checks `.env` / uv
+  2. syncs dependencies
+  3. bootstraps Atlas
+  4. resets the demo data (baselines kept)
+  5. starts the gateway, the immune loop (mock Architect by default) and the dashboard, and opens the browser
+  6. runs the agents and prints the learned policies
+
+  Ctrl+C stops everything; logs go to `.demo-logs/`. Options: `--fast`, `--normal`, `--quick`, `--file x.json`, `--real-architect`, `--no-dashboard`, `--no-reset`, `--exit`, and `-- <scenario args>`.
+- **Scenarios are JSON now** (`agents/scenario_files/`):
+  - `default.json`: the full story
+  - `quick.json`: learn → block → widen → block
+
+  A step is `{"id", "title", "learns"?, "actions": [{"agent", "tool", "target", "args"}]}` or `{"benign_rounds": N}`. Change attacks without touching Python.
+- **Speed presets** (`--pace`):
+  - `fast`: 1 benign round, 0.3s gaps, ~12s
+  - `normal`: 3 rounds, 2s gaps
+  - `demo`: 2 rounds, 2.5s gaps, 1.2s per action
+
+  `--gap`, `--slow` and `--benign-rounds` override any preset. Benign size precedence: `--benign-rounds` > explicit `--pace` > the file. `--list` shows the steps.
+- **Tested** on a throwaway Atlas DB:
+  - `--fast`: 27s total including startup, 7/7 blocks, v1 and v2 each learned in 0.7s
+  - `--quick --fast --no-dashboard`: 13s
+  - `--exit` stops all services; 127 tests pass
+
+---
+
 ### Still open / next
 - Re-run integration with a real `OPENROUTER_API_KEY` (Jev instead of the fallback) and with Atlas (`MONGODB_URI`); check actions show up in `action_ledger`.
 - Check with Person B that baseline policies cover step 6 (`~/.ssh/*`, `/etc/*`, unauthorized `send_message`).
