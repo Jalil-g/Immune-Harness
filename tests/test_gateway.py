@@ -259,3 +259,9 @@ def test_live_atlas_store_roundtrip():
         from pymongo import MongoClient
         with MongoClient(settings.uri) as client:
             client.drop_database(settings.database)
+
+
+def test_embedded_watcher_only_runs_with_atlas_store():
+    app = create_app(store=MemoryStore(), jev=JevScorer(client=ContextAwareJev()), edges=set(), embed_watcher=True)
+    with TestClient(app) as c:
+        assert c.get("/health").json()["watcher_running"] is False

@@ -76,5 +76,6 @@ def _llm_draft(incident: Incident, active: list[Policy], ledger: list[LedgerEntr
         model=os.getenv("ARCHITECT_MODEL", "anthropic/claude-sonnet-4.5"),
         messages=[{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}],
         response_format=PolicyDraft,
+        max_tokens=4000,
     )
     return _to_policy(r.choices[0].message.parsed, incident)
