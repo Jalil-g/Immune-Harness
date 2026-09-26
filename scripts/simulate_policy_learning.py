@@ -5,12 +5,13 @@ import time
 from datetime import datetime, timedelta, UTC
 
 from db.schemas import Action, Decision, Incident, LedgerEntry, Policy
-from harness.compiler import compile_policy, matches, process_incident
+from harness.compiler import compile_policy, process_incident
+from harness.sentry import policy_matches
 
 store = {"ledger": [], "incidents": [], "policies": []}
 clock = [datetime(2026, 1, 1, tzinfo=UTC)]
 
-COVERT = Policy(policy_id="_jev", tool=("read_file",), target_glob=("*",),
+COVERT = Policy(policy_id="_jev", status="active", tool=("read_file",), target_glob=("*",),
                 condition="resource_touched_by_other_agent", window_s=600, rationale="fake jev heuristic")
 
 
@@ -18,10 +19,18 @@ def step(msg):
     print(msg)
 
 
+def rows():
+    return [e.model_dump() for e in store["ledger"]]
+
+
+def matches(policy, action):
+    return policy_matches(policy, action, rows(), set())
+
+
 def fake_jev(action):
     """Stand-in for Person A's Jev call: flag reads of /tmp-ish files another agent wrote."""
     tmpish = action.target.startswith(("/tmp/", "/var/tmp/", "/dev/shm/"))
-    return 0.95 if tmpish and matches(COVERT, action, store["ledger"]) else 0.02
+    return 0.95 if tmpish and matches(COVERT, action) else 0.02
 
 
 def record(a, decision, reason, risk=None, policy_id=None):
@@ -36,7 +45,7 @@ def call(agent, tool, target):
     clock[0] += timedelta(seconds=1)
     a = Action(agent_id=agent, tool=tool, target=target, ts=clock[0])
     active = [p for p in store["policies"] if p.status == "active"]
-    hit = next((p for p in active if matches(p, a, store["ledger"])), None)
+    hit = next((p for p in active if matches(p, a)), None)
     if hit:
         record(a, "block", f"policy {hit.policy_id}", policy_id=hit.policy_id)
         step(f"  {agent} {tool} {target} -> BLOCK by policy {hit.policy_id} v{hit.version} (no LLM call)")

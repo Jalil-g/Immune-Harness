@@ -308,7 +308,7 @@ evaluation endpoint wired to the shared schemas, cache, and collections.
 | Policy matching | Match tool, normalized target, and condition using cached policies | SSH and `/etc` baseline proposals block with a policy ID |
 | Jev path | Call Jev on a policy miss with bounded recent resource context; block if score is greater than `0.8` | First novel scripted attack blocks with reason and risk score |
 | Fallback | Implement the architecture's heuristic fallback for a slow/unavailable Jev response | Demonstrable behavior under a forced timeout |
-| Persistence | Write each valid evaluated proposal plus decision to action_ledger; blocked proposals also create incidents | Correctly shaped documents appear in both collections |
+| Persistence | Write each valid evaluated proposal plus decision to action_ledger; proposals blocked by Jev (or its heuristic fallback) also create incidents. Policy blocks are ledger-only, so a known attack does not re-trigger the Architect | Correctly shaped documents appear in both collections |
 | Failure behavior | Handle unavailable cache/gateway dependencies explicitly | C never executes on an unavailable or malformed evaluation |
 | Latency | Define the boundary measured by Decision.latency_ms and measure it | Cached-policy decisions measured separately from Jev and persistence work |
 

@@ -17,12 +17,15 @@ from pydantic import (
     model_validator,
 )
 
-Tool = Literal["read_file", "write_file", "http_get", "shell", "send_message"]
+# Built-in sandbox tools. Any other nonempty tool name is valid too (e.g. a finance agent's
+# "transfer_funds"), so the harness covers agents in other domains; Jev judges those from args.
+KNOWN_TOOLS = ("read_file", "write_file", "http_get", "shell", "send_message")
+NonEmptyStr = Annotated[str, Field(min_length=1)]
+Tool = NonEmptyStr
 Condition = Literal[
     "always", "resource_touched_by_other_agent", "rate_exceeds", "unauthorized_recipient"
 ]
 PolicyStatus = Literal["draft", "active", "superseded"]
-NonEmptyStr = Annotated[str, Field(min_length=1)]
 PositiveInt = Annotated[int, Field(gt=0, strict=True)]
 UTCDateTime = Annotated[AwareDatetime, AfterValidator(lambda value: value.astimezone(UTC))]
 RiskScore = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]

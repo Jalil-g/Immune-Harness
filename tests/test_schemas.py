@@ -40,7 +40,7 @@ def test_architecture_policy_round_trips_json_and_bson():
     "changes",
     [
         {"effect": "allow"},
-        {"tool": ["unknown"]},
+        {"tool": [""]},
         {"tool": []},
         {"target_glob": []},
         {"condition": "python_eval"},

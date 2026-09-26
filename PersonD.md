@@ -43,7 +43,7 @@ result = process_incident(incident, active, ledger)
 
 ## Decisions and why
 
-- **Use the shared `db.schemas` types, no local models.** Originally D had its own `Policy` and used dicts and an in-memory `store`. Person B's schemas are strict (`extra="forbid"`, tuples, datetime `ts`), so everything is now typed against theirs.
+- **Use the shared `db.schemas` types, no local models.** Originally D had its own `Policy` and used dicts and an in-memory `store`. Person B's schemas are strict (`extra="forbid"`, tuples, datetime `ts`), so everything is now typed against theirs. `Tool` is any non-empty string, so custom tools work.
 - **Pure functions, caller persists.** Keeps D independent of Mongo. It's testable without Atlas and the gateway or a change-stream listener decides where writes happen.
 - **The LLM gets its own loose `PolicyDraft` model** (lists, two conditions, `window_s`). `Policy` has validators and tuples that are awkward for structured output. `_to_policy` converts and validates.
 - **Generalize to the directory.** A file-exact glob (`/tmp/shared-note.txt`) would miss every variant, so drafts become `/tmp/*`. The prompt says so and `_to_policy` enforces it (small models ignore prompts).
@@ -53,15 +53,15 @@ result = process_incident(incident, active, ledger)
   1. reject `*`, `/*`, `**` (`scope too broad`)
   2. the policy must have blocked the triggering action, using `incident.context` plus the ledger as history
   3. **replay** against up to the last 200 *allowed* ledger rows, and reject at 5% or more false positives
-- **Only `always` and `resource_touched_by_other_agent` are supported.** `rate_exceeds` and `unauthorized_recipient` exist in the schema but the Compiler can't replay them, so it rejects them (`unsupported condition`) instead of activating a policy it hasn't validated. Matching for live traffic belongs to Sentry.
+- **Replay uses Sentry's `policy_matches`, not our own matcher.** One source of truth, so replay predicts what the gateway will do: it honors `authorized_edges` (both directions), counts only `allow` rows as touching a resource, and supports all four conditions. Replay only passes rows *earlier* than the action being tested, since the gateway only sees the past. `process_incident` and `compile_policy` take an optional `authorized_edges`; pass the gateway's set or replay can over-count false positives on authorized pairs.
+- **The Architect only drafts `always` and `resource_touched_by_other_agent`.** The Compiler could validate `rate_exceeds` and `unauthorized_recipient` too, but the draft model doesn't produce them yet.
 - **Mock Architect by default.** With no `OPENROUTER_API_KEY` (or with `MOCK_ARCHITECT=1`) it drafts deterministically, so the demo and tests are repeatable and free. With a key it calls Claude through OpenRouter (`ARCHITECT_MODEL`, default `anthropic/claude-sonnet-4.5`).
-- **Time in `matches`:** `ts` is a UTC datetime (per Person B), so the window uses `timedelta`. Only *earlier* ledger rows from a *different* agent count.
 
 ## What D needs from others
 
 - **Person A (gateway/Sentry):** a call to `process_incident` after a block, passing active policies and a ts-ascending ledger. Persist the result as above.
 - **Person B (Atlas):** nothing new. `Incident` has no place for the Compiler's `reason`; if we want it in the dashboard, add an optional `compiler_note` field.
-- Sentry has its own copy of policy matching. It must agree with `compiler.matches` (same glob and window semantics) or replay results won't predict live behavior.
+- Nothing triggers `process_incident` yet: the gateway writes to `security_incidents` and stops. D needs a watcher on that collection (see Known gaps).
 
 ## Run it
 
@@ -76,5 +76,7 @@ The demo shows: benign traffic passes, alpha-writes/beta-reads is blocked by Jev
 
 - No Mongo wrapper yet (fetch active and ledger, then persist). About 15 lines once the gateway is ready.
 - No unit tests for D beyond the demo.
-- `rate_exceeds` and `unauthorized_recipient` are not supported by the Compiler.
+- No watcher yet: nothing calls `process_incident` when the gateway inserts an incident.
+- The Architect doesn't draft `rate_exceeds` or `unauthorized_recipient`.
+- `Incident` drops Jev's `threat_category`, so the Architect can't use it.
 - The mock only knows one policy (`p_tmp_channel`); other threats need the LLM path.

@@ -1,44 +1,38 @@
 """Compiler: validate a draft Policy, replay it against the ledger, then version it (supersede the old one).
 
 Pure functions over the shared db.schemas types; the caller persists the result.
+Matching is Sentry's `policy_matches`, so replay predicts exactly what the gateway will do.
 """
 from dataclasses import dataclass
-from datetime import timedelta
-from fnmatch import fnmatch
 
 from db.schemas import Action, Incident, LedgerEntry, Policy
+from harness.sentry import policy_matches
 
 MAX_FP = 0.05
 BAD_GLOBS = {"*", "/*", "**"}
-SUPPORTED = {"always", "resource_touched_by_other_agent"}
+NO_EDGES: frozenset[tuple[str, str]] = frozenset()
 
 
 @dataclass
 class CompileResult:
     ok: bool
     reason: str
-    policy: Policy | None = None      # new active version to insert
+    policy: Policy | None = None      # new active version to insert into security_policies
     superseded: Policy | None = None  # old version to mark superseded (status="superseded")
 
 
-def matches(policy: Policy, action: Action, ledger: list[LedgerEntry]) -> bool:
-    if action.tool not in policy.tool:
-        return False
-    if not any(fnmatch(action.target, g) for g in policy.target_glob):
-        return False
-    if policy.condition == "always":
-        return True
-    window = timedelta(seconds=policy.window_s)
-    return any(
-        r.target == action.target and r.agent_id != action.agent_id
-        and timedelta(0) <= action.ts - r.ts <= window
-        for r in ledger if r.ts < action.ts
-    )
+def _as_action(e: LedgerEntry) -> Action:
+    return Action(agent_id=e.agent_id, tool=e.tool, target=e.target, args=e.args, ts=e.ts)
 
 
-def compile_policy(draft: Policy, incident: Incident, active: list[Policy], ledger: list[LedgerEntry]) -> CompileResult:
-    if draft.condition not in SUPPORTED:
-        return CompileResult(False, f"unsupported condition {draft.condition}")
+def _blocks(policy: Policy, action: Action, history: list[dict], edges) -> bool:
+    """Would `policy` block `action` given only what happened before it (the gateway sees only the past)."""
+    before = [r for r in history if r["ts"] < action.ts]
+    return policy_matches(policy, action, before, set(edges))
+
+
+def compile_policy(draft: Policy, incident: Incident, active: list[Policy], ledger: list[LedgerEntry],
+                   authorized_edges=NO_EDGES) -> CompileResult:
     if any(g in BAD_GLOBS for g in draft.target_glob):
         return CompileResult(False, "scope too broad")
 
@@ -52,12 +46,13 @@ def compile_policy(draft: Policy, incident: Incident, active: list[Policy], ledg
     fields["status"] = "active"
     policy = Policy(**fields)
 
-    history = list({e.action_id: e for e in [*ledger, *incident.context]}.values())
-    if not matches(policy, incident.action, history):
+    entries = list({e.action_id: e for e in [*ledger, *incident.context]}.values())
+    history = [e.model_dump() for e in entries]
+    if not _blocks(policy, incident.action, history, authorized_edges):
         return CompileResult(False, "policy would not have blocked the triggering action")
 
-    allowed = sorted((r for r in history if r.decision == "allow"), key=lambda r: r.ts)[-200:]
-    hits = [r for r in allowed if matches(policy, r, history)]
+    allowed = sorted((e for e in entries if e.decision == "allow"), key=lambda e: e.ts)[-200:]
+    hits = [e for e in allowed if _blocks(policy, _as_action(e), history, authorized_edges)]
     fp = len(hits) / len(allowed) if allowed else 0.0
     if fp >= MAX_FP:
         return CompileResult(False, f"false positive rate {fp:.0%} >= {MAX_FP:.0%}")
@@ -66,8 +61,9 @@ def compile_policy(draft: Policy, incident: Incident, active: list[Policy], ledg
     return CompileResult(True, f"ok (replay FP {fp:.0%} over {len(allowed)} rows)", policy, superseded)
 
 
-def process_incident(incident: Incident, active: list[Policy], ledger: list[LedgerEntry]) -> CompileResult:
+def process_incident(incident: Incident, active: list[Policy], ledger: list[LedgerEntry],
+                     authorized_edges=NO_EDGES) -> CompileResult:
     """The whole D pipeline. Caller inserts result.policy, supersedes result.superseded, sets incident.policy_id."""
     from harness.architect import draft_policy
     draft = draft_policy(incident, active, ledger)
-    return compile_policy(draft, incident, active, ledger)
+    return compile_policy(draft, incident, active, ledger, authorized_edges)

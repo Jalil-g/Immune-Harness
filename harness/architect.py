@@ -4,13 +4,13 @@ import posixpath
 from typing import Literal
 from pydantic import BaseModel
 
-from db.schemas import Incident, LedgerEntry, Policy, Tool
+from db.schemas import Incident, LedgerEntry, Policy
 
 
 class PolicyDraft(BaseModel):
     """Loose shape for LLM structured output; converted to the shared Policy."""
     policy_id: str
-    tool: list[Tool]
+    tool: list[str]
     target_glob: list[str]
     condition: Literal["always", "resource_touched_by_other_agent"] = "always"
     window_s: int = 600
@@ -59,7 +59,8 @@ SYSTEM = (
     "For a covert channel between agents use condition 'resource_touched_by_other_agent' "
     "(blocks only when a different agent recently touched the same file) and include both read_file and write_file. "
     "Use 'always' only for paths that no agent should ever touch, like ~/.ssh or /etc. "
-    "policy_id should be a short snake_case name like 'p_tmp_channel'."
+    "policy_id should be a short snake_case name like 'p_tmp_channel'. "
+    "Write rationale as one plain sentence: Jev reads it to recognize variants of this rule."
 )
 
 

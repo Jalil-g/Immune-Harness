@@ -27,7 +27,7 @@ Detect (Jev) → Block → Architect rewrites policy → Compiler validates → 
  │  → BLOCK if violates_guardrails > 0.8                      │
  │  every action + decision → action_ledger                   │
  └──────┬──────────────────────────────┬──────────────────────┘
-   allow│                         block│ → insert security_incidents
+   allow│                         block│ → insert security_incidents (Jev blocks only; policy blocks are ledger-only)
         ▼                              ▼
   Tool runner                  ARCHITECT (async, change stream on security_incidents)
   (fake FS in ./sandbox)         LLM + Pydantic structured output → new policy OR version+1 of existing
@@ -114,6 +114,8 @@ harness/
   gateway.py        # FastAPI /evaluate                          (A)
   sentry.py         # policy match + decision logic              (A)
   jev.py            # Jev via OpenRouter (typesafe-sdk)          (A)
+  store.py          # ledger/incident writes, Atlas or in-memory (A)
+  contracts.py      # A's Decision extras on top of db/schemas   (A)
   policy_cache.py   # load active policies + change stream       (B)
   architect.py      # incident → policy JSON (structured output) (D)
   compiler.py       # validate + replay + activate               (D)
