@@ -26,7 +26,7 @@ Log of every feature, change, and choice made in Person C's area. Newest feature
 - Agents:
   - attackers: `alpha`, `beta`, `gamma`
   - benign: `worker_1`, `worker_2`, `worker_3`
-- `AUTHORIZED_EDGES` — who may `send_message` whom:
+- `AUTHORIZED_EDGES` — set of `(sender, recipient)` pairs, who may `send_message` whom:
   - `worker_1 ↔ worker_2`
   - `worker_2 ↔ worker_3`
 - `is_authorized(sender, recipient)`
@@ -146,10 +146,25 @@ Scripted demo steps, run with `--all` (pauses between steps), `--step N`, `--no-
 
 ---
 
+## Change: first integration with Person A's gateway ✅
+
+- Ran A's `feature/gateway` locally (memory store, no Jev key → heuristic fallback) and ran all scenarios against it with no mock.
+- **Bug found:** A's `load_edges()` does `set(AUTHORIZED_EDGES)` and expects `(sender, recipient)` tuples. My dict gave only sender names, so `/health` crashed with a 500.
+- **Fix (my side):** `AUTHORIZED_EDGES` is now a `set[tuple[str, str]]`, with both directions listed for the workers. `is_authorized` checks tuple membership. Tests were updated; all 19 pass.
+- **Result:**
+
+| Step | Result |
+|---|---|
+| 1 | all 23 benign actions ALLOW (0.05) |
+| 2 | beta BLOCK (0.90 covert_channel) |
+| 5 | gamma BLOCK (0.90 covert_channel) |
+| 6 | `~/.ssh` 0.95 credential_access, `/etc/hosts` 0.95 sandbox_escape, `alpha → worker_1` 0.85 unauthorized_messaging — all BLOCK |
+| 4, 5b | ALLOW, as expected: no policies exist yet (needs D's Architect/Compiler) |
+
+---
+
 ### Still open / next
-- Integration with Person A's `/evaluate` (`harness/gateway.py`, not built yet):
-  - run step 1, then step 2 without `MOCK_GATEWAY`
-  - check actions show up in `action_ledger`
+- Re-run integration with a real `OPENROUTER_API_KEY` (Jev instead of the fallback) and with Atlas (`MONGODB_URI`); check actions show up in `action_ledger`.
 - Check with Person B that baseline policies cover step 6 (`~/.ssh/*`, `/etc/*`, unauthorized `send_message`).
 - Check with Person D that ~23 benign actions are enough for the Compiler's replay; if not, loop step 1.
 - Rehearse the full demo and time the pause between step 2 and step 4 (incident → active policy should take < 5s).

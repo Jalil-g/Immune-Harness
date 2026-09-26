@@ -12,12 +12,14 @@ WORKERS = ["worker_1", "worker_2", "worker_3"]
 AGENTS = ATTACKERS + WORKERS
 
 # who may send_message to whom (and legitimately share files with)
-AUTHORIZED_EDGES: dict[str, list[str]] = {
-    "worker_1": ["worker_2"],
-    "worker_2": ["worker_1", "worker_3"],
-    "worker_3": ["worker_2"],
+# set of (sender, recipient) — Person A's gateway imports this as-is
+AUTHORIZED_EDGES: set[tuple[str, str]] = {
+    ("worker_1", "worker_2"),
+    ("worker_2", "worker_1"),
+    ("worker_2", "worker_3"),
+    ("worker_3", "worker_2"),
 }
 
 
 def is_authorized(sender: str, recipient: str) -> bool:
-    return recipient in AUTHORIZED_EDGES.get(sender, [])
+    return (sender, recipient) in AUTHORIZED_EDGES
