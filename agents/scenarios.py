@@ -1,9 +1,16 @@
 """Scripted demo. Usage:
-    python3 -m agents.scenarios --all          # every step, pause between
+    python3 -m agents.scenarios --all          # every step, runs by itself (waits for policies to be learned)
+    python3 -m agents.scenarios --all --manual # press Enter between steps
     python3 -m agents.scenarios --step 2       # one step
     MOCK_GATEWAY=1 python3 -m agents.scenarios --all --no-pause
+    python3 -m agents.scenarios --all --slow 1.5   # pause after every action (for the dashboard)
 """
 import argparse
+import os
+import time
+import urllib.request
+
+from agents.config import GATEWAY_URL, MOCK_GATEWAY
 
 from agents.hook import call
 
@@ -65,6 +72,60 @@ STEPS = {
 }
 
 
+# after these steps the immune loop should learn a policy before the next step makes sense
+LEARNS = {"2", "5"}
+
+_atlas = None
+
+
+def learned_versions():
+    """(policy_id, version) of every learned policy in Atlas, or None if Atlas isn't configured."""
+    global _atlas
+    if not os.environ.get("MONGODB_URI"):
+        from dotenv import load_dotenv
+        load_dotenv()
+    if not os.environ.get("MONGODB_URI"):
+        return None
+    try:
+        if _atlas is None:
+            from db.atlas import Atlas
+            _atlas = Atlas()
+        docs = _atlas.security_policies.find({"policy_id": {"$not": {"$regex": "^p_baseline"}}},
+                                             {"_id": 0, "policy_id": 1, "version": 1})
+        return {(d["policy_id"], d["version"]) for d in docs}
+    except Exception:
+        return None
+
+
+def wait_for_policy(before, timeout=30.0, poll=0.5):
+    """Block until a new policy version shows up in Atlas (or timeout). Returns it, or None."""
+    print("  … waiting for the immune loop to learn a policy", flush=True)
+    if before is None:
+        time.sleep(5)
+        print("  (no Atlas configured — waited 5s)")
+        return None
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        new = (learned_versions() or set()) - before
+        if new:
+            pid, v = sorted(new)[-1]
+            print(f"  ✓ learned {pid} v{v} after {time.time() - t0:.1f}s")
+            return pid, v
+        time.sleep(poll)
+    print(f"  ! no new policy after {timeout:.0f}s — is harness.incident_watcher running?")
+    return None
+
+
+def gateway_up() -> bool:
+    if MOCK_GATEWAY:
+        return True
+    try:
+        urllib.request.urlopen(GATEWAY_URL.rsplit("/", 1)[0] + "/health", timeout=3)
+        return True
+    except Exception:
+        return False
+
+
 def run_step(key: str):
     name, fn = STEPS[key]
     print(f"\n=== Step {key}: {name} ===")
@@ -75,16 +136,42 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--step", choices=STEPS.keys())
     ap.add_argument("--all", action="store_true")
-    ap.add_argument("--no-pause", action="store_true")
+    ap.add_argument("--manual", action="store_true", help="press Enter between steps")
+    ap.add_argument("--no-pause", action="store_true", help="no waiting at all (tests / quick runs)")
+    ap.add_argument("--gap", type=float, default=2.0, help="seconds between steps in automatic mode")
+    ap.add_argument("--slow", type=float, default=0, help="seconds to wait after every action")
     a = ap.parse_args()
+
+    if a.slow:
+        global call
+        real_call = call
+
+        def call(*args, **kwargs):
+            out = real_call(*args, **kwargs)
+            time.sleep(a.slow)
+            return out
+
+    if (a.step or a.all) and not gateway_up():
+        raise SystemExit(f"Gateway not running at {GATEWAY_URL}\n"
+                         "Start it first (own terminal):  uv run uvicorn harness.gateway:app --port 8000\n"
+                         "Or run without it:  MOCK_GATEWAY=1 uv run python -m agents.scenarios --all")
 
     if a.step:
         run_step(a.step)
     elif a.all:
-        for key in STEPS:
+        keys = list(STEPS)
+        for n, key in enumerate(keys):
+            before = learned_versions() if key in LEARNS and not (a.manual or a.no_pause) else None
             run_step(key)
-            if not a.no_pause:
+            if a.no_pause or n == len(keys) - 1:
+                continue
+            if a.manual:
                 input("  [enter] next step...")
+            elif key in LEARNS:
+                wait_for_policy(before)
+                time.sleep(a.gap)
+            else:
+                time.sleep(a.gap)
     else:
         ap.print_help()
 

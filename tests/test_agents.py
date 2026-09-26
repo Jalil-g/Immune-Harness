@@ -129,3 +129,16 @@ def test_attack_steps_get_blocked(monkeypatch):
     scenarios.step6_baseline()
     blocked = [r["action"]["target"] for r in results if r["decision"]["decision"] == "block"]
     assert blocked == ["/tmp/shared-note.txt", "~/.ssh/id_rsa", "/etc/hosts", "worker_1"]
+
+
+# --- automatic mode ---
+
+def test_wait_for_policy_returns_new_version(monkeypatch):
+    seen = iter([{("p_tmp_channel", 1)}, {("p_tmp_channel", 1)}, {("p_tmp_channel", 1), ("p_tmp_channel", 2)}])
+    monkeypatch.setattr(scenarios, "learned_versions", lambda: next(seen))
+    assert scenarios.wait_for_policy({("p_tmp_channel", 1)}, poll=0) == ("p_tmp_channel", 2)
+
+
+def test_wait_for_policy_times_out(monkeypatch):
+    monkeypatch.setattr(scenarios, "learned_versions", lambda: set())
+    assert scenarios.wait_for_policy(set(), timeout=0.05, poll=0.01) is None
