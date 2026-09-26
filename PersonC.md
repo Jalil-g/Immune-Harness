@@ -287,6 +287,24 @@ Run: `uv run streamlit run dashboard/app.py`
 
 ---
 
+## Change: dashboard redesign (premium dark UI) ✅
+
+Presentation-layer only; the data flow and both modes are unchanged.
+- **Split:** `dashboard/ui/data.py` (Atlas reads + logic, moved unchanged), `ui/styles.py` (one stylesheet), `ui/components.py` (render helpers), `app.py` (layout + modes). Theme in `.streamlit/config.toml` (dark, "Deploy" button hidden).
+- **Fixed the overlap bug:** the feed table was `nowrap` and wider than its column. It's now a fixed-layout table with widths on `<th>` (Streamlit's sanitizer drops `<colgroup>`), cut-off text with a tooltip, and a scroll fallback. Below 1360px the feed goes full width with policy memory underneath.
+- **Checked in real Chrome over the DevTools protocol** (screenshots + DOM measurements) at 1280 / 1440 / 1920: no overlap, no table overflow, Inter + JetBrains Mono loaded.
+- **Visual system:** near-black background with a faint grid and glow. Semantic colours everywhere: allow emerald, block rose, Jev amber, memory cyan, learning violet.
+- **Header:** logo, pulsing LIVE / SLOW-MO pill, Atlas DB badge.
+- **KPIs:** 3 coloured hero numbers (caught by Jev, blocked by memory, versions learned) plus one speed card ("2.7× faster from memory", memory vs Jev bars). Numbers count up when they change (CSS `@property`).
+- **Pipeline:** icon nodes joined by connectors that glow in the path's colour. Unreached stages are dimmed; Jev shows as dashed "skipped" on memory blocks. A packet travels along the connectors for new events.
+- **Feed:** solid decision pills, a Jev / policy pill with an icon, cyan or red left border for memory or Jev blocks, a risk bar, and memory-block latency highlighted.
+- **Policy memory:** origin badge (learned / baseline), tool chips, v1 → v2 timeline with added globs as green `+ /var/tmp/*` chips, and a NEW glow for new policies.
+- **Icons are CSS masks**, because Streamlit strips inline `<svg>`.
+- **Slow-mo** opens on the newest incident that taught a policy.
+- Not verifiable in static screenshots: the count-up and packet animations (CSS only).
+
+---
+
 ### Still open / next
 - Re-run integration with a real `OPENROUTER_API_KEY` (Jev instead of the fallback) and with Atlas (`MONGODB_URI`); check actions show up in `action_ledger`.
 - Check with Person B that baseline policies cover step 6 (`~/.ssh/*`, `/etc/*`, unauthorized `send_message`).
