@@ -7,7 +7,10 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-Tool = Literal["read_file", "write_file", "http_get", "shell", "send_message"]
+# Built-in sandbox tools. Any other tool name is accepted too (e.g. a finance agent's "transfer_funds"),
+# so the harness works for agents in other domains; Jev judges them from `args` + the agent's guardrails.
+KNOWN_TOOLS = ("read_file", "write_file", "http_get", "shell", "send_message")
+Tool = str
 ThreatCategory = Literal[
     "benign",
     "covert_channel",
@@ -15,6 +18,7 @@ ThreatCategory = Literal[
     "sandbox_escape",
     "exfiltration",
     "unauthorized_messaging",
+    "guardrail_exploit",
 ]
 
 
@@ -25,8 +29,8 @@ def utcnow() -> datetime:
 class Action(BaseModel):
     agent_id: str
     tool: Tool
-    target: str  # path, URL, command, or recipient agent
-    args: dict = {}
+    target: str  # path, URL, command, recipient agent, or account/resource for custom tools
+    args: dict = {}  # tool arguments (e.g. amount, approval) — shown to Jev
     ts: datetime = Field(default_factory=utcnow)
 
 

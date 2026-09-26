@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from fnmatch import fnmatch
 
 from harness.contracts import Action, Decision, Policy
-from harness.jev import JevScorer
+from harness.jev import DEFAULT_GUARDRAILS, JevScorer
 
 RISK_THRESHOLD = float(os.environ.get("RISK_THRESHOLD", "0.8"))
 
@@ -63,13 +63,20 @@ def policy_matches(p: Policy, action: Action, rows: list[dict],
 class Sentry:
     def __init__(self, policies: PolicySource, context: ContextSource, jev: JevScorer | None = None,
                  authorized_edges: set[tuple[str, str]] | None = None,
-                 threshold: float = RISK_THRESHOLD, context_window_s: int = 600):
+                 threshold: float = RISK_THRESHOLD, context_window_s: int = 600,
+                 guardrails: dict[str, list[str]] | None = None):
+        """guardrails: natural-language rules per agent_id; "*" applies to every agent
+        (defaults to DEFAULT_GUARDRAILS). Jev checks actions against them (guardrail_exploit)."""
         self.policies = policies
         self.context = context
         self.jev = jev or JevScorer()
         self.authorized_edges = authorized_edges or set()
         self.threshold = threshold
         self.context_window_s = context_window_s
+        self.guardrails = {"*": DEFAULT_GUARDRAILS, **(guardrails or {})}
+
+    def guardrails_for(self, agent_id: str) -> list[str]:
+        return self.guardrails.get("*", []) + self.guardrails.get(agent_id, [])
 
     async def evaluate(self, action: Action) -> Decision:
         start = time.perf_counter()
@@ -84,7 +91,7 @@ class Sentry:
                     latency_ms=(time.perf_counter() - start) * 1000,
                 )
 
-        j = await self.jev.score(action, rows, self.authorized_edges)
+        j = await self.jev.score(action, rows, self.authorized_edges, self.guardrails_for(action.agent_id))
         block = j.risk > self.threshold
         return Decision(
             decision="block" if block else "allow",

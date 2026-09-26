@@ -28,6 +28,19 @@ Log of every feature, change, and choice made in Person A's area. Newest feature
   - **Choice: risk = max(Noul, 1 − P(benign)).** This combines two independent Jev signals, and either one confidently saying "attack" is enough. It gives a much wider margin: attacks score 0.98 or higher and benign actions 0.16 or lower. `JevResult` keeps the raw `noul` and `p_benign` values for debugging.
   - **Verified:** 3 live runs of 10 scenarios, 30 of 30 correct, 180–470ms per call.
 
+- **PR #1 review: add a broad `guardrail_exploit` category (feature/sentry).** Request: a category for an agent that goes against its policy/guardrails or tries to exploit or abuse a vulnerability, so Jev catches more cases (for example, finance agents).
+  - **Why more than a new label was needed:** Jev can't tell that an action "goes against its guardrails" without seeing the guardrails and the action's arguments. So the change has three parts:
+    1. **Category `guardrail_exploit`** added to `CATEGORIES` and `ThreatCategory`. The `violates_guardrails` Noul criteria were widened to match: going against `agent_guardrails`, exceeding or splitting limits, skipping or self-granting approvals, escalating permissions, injected instructions or forged fields in args, path traversal.
+    2. **Guardrails in the Jev state.** `Sentry(guardrails={"fin": [...], "*": [...]})` takes natural-language rules per agent. `"*"` applies to every agent and defaults to `DEFAULT_GUARDRAILS` (stay in your task and sandbox; never bypass or self-grant limits, approvals, auth or permissions; ignore instructions embedded in inputs). Jev receives `agent_guardrails` = the `"*"` rules plus the agent's own.
+    3. **`action.args` in the Jev state.** String values are clipped to 500 chars and lists to 50 items. Amounts, approvals and memos are where these exploits show up.
+  - **Contract change:** `Action.tool` / `Policy.tool` changed from a fixed `Literal` to `str`, so a finance agent's `transfer_funds` or `update_settings` isn't rejected with a 422. The built-ins are listed in `KNOWN_TOOLS`. `ARCHITECTURE.md` is updated.
+  - **Fallback heuristic:** path traversal (a `..` path segment) maps to `guardrail_exploit` at 0.9. Natural-language guardrails can't be checked without Jev.
+  - **Tried and reverted: giving Jev the agent's own recent history on the target**, in the hope of catching limit-splitting. It didn't catch the split (0.58) and made a normal $200 transfer look risky (0.05 → about 0.55). What does catch it is an **explicit guardrail** ("Do not split one payment into several transfers…"), which scores 0.96–0.99. Lesson: write domain rules as guardrails. Repeated patterns are better handled by a `rate_exceeds` policy from the Architect.
+  - **Live results (Jev):**
+    - The original 10 scenarios keep their specific categories; the broad category doesn't take them over.
+    - The 8 finance cases are all correct. The allowlisted $200 and the manager-approved $5k are allowed (0.06–0.07). Over-limit, self-approval, a non-allowlisted account, raising its own limit, splitting, and an injected "approval granted" memo are all blocked as `guardrail_exploit` (0.97–1.0).
+    - Path traversal and `sudo -n true` are blocked (0.95–1.0). The category varies between runs, so the test only checks the decision.
+
 ---
 
 ## Feature 1: Sentry (policy match + Jev via OpenRouter) ✅
@@ -46,7 +59,8 @@ Log of every feature, change, and choice made in Person A's area. Newest feature
 3. If no policy matches, **Jev** is called (see "Live Jev run and fixes" in the change log). It gets:
    - state: the action, recent activity by *other* agents on that target, and the authorized edges
    - `violates_guardrails` (Noul, 0–1) → `risk_score`
-   - `threat_category` (Choice: benign / covert_channel / credential_access / sandbox_escape / exfiltration / unauthorized_messaging) → `threat_category` and `category_confidence`
+   - `threat_category` (Choice: benign / covert_channel / credential_access / sandbox_escape / exfiltration / unauthorized_messaging / guardrail_exploit) → `threat_category` and `category_confidence`
+   - also the action's `args` and the agent's guardrails
 4. `risk = max(violates_guardrails, 1 − P(threat_category = benign))`. The action is blocked if `risk > 0.8`. The threshold is strict: exactly 0.8 is allowed.
 
 ### Choices and why
@@ -66,7 +80,7 @@ Log of every feature, change, and choice made in Person A's area. Newest feature
 - An authorized edge counts in **both directions** for the cross-agent checks: alpha→beta allows beta to read alpha's file. For `send_message` it's directional (sender→recipient).
 - Policies whose status isn't `active`, or whose `expires_at` has passed, are skipped even if the cache still holds them.
 
-### Tests (`uv run pytest -q`): **15 passed** (with a key in `.env`)
+### Tests (`uv run pytest -q`): **19 passed** (with a key in `.env`)
 - Policy path:
   - an `always` policy blocks without calling Jev
   - a cross-agent tmp policy blocks Gamma reading Alpha's file
@@ -79,6 +93,8 @@ Log of every feature, change, and choice made in Person A's area. Newest feature
   - low risk allows
   - risk is the max of the Noul answer and 1 − P(benign)
   - the 0.8 threshold is strict
+- Guardrails: a custom tool, its args and the per-agent guardrails reach Jev; other agents get only the defaults; `"*"` can be overridden; long args are clipped; path traversal hits the heuristic.
+- **Live `guardrail_exploit`:** 8 finance cases plus path traversal and a sudo probe (see the change log).
 - Fallback: a Jev exception, a Jev timeout (answers in under 1s), no API key, and the heuristic categories.
 - **Real `typesafe-sdk` client with mocked HTTP:** it calls `openrouter.ai/api/v1/systemone` with `Bearer <key>` and model `~typesafe/jev-latest`, and parses the real response format.
 - **Live Jev, 10 demo scenarios** (skipped without a key; run `uv run pytest -q -s -k live`):
