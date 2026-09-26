@@ -163,6 +163,23 @@ Scripted demo steps, run with `--all` (pauses between steps), `--step N`, `--no-
 
 ---
 
+## Feature 6: Live gateway test (`tests/test_live_gateway.py`) ✅
+
+- End-to-end: my agents → **real running gateway** → Jev (or fallback if no `OPENROUTER_API_KEY`).
+- **Auto-skips** when nothing answers at `GATEWAY_URL/health`, so the normal `uv run pytest -q` stays green for everyone.
+- Checks:
+  - the gateway loaded my edges
+  - step 1: no false positives
+  - step 2: beta blocked
+  - step 5: gamma blocked
+  - step 6: all 3 blocked
+- Run it locally with `./run_demo.sh test`. `run_demo.sh` is a local-only helper, not committed: it starts A's gateway from `feature/gateway` in `.gateway/`, runs the test, then stops the gateway.
+- **Result (fallback, no Jev key yet):** 5/5 passed.
+- Pulled `main` (A's Sentry, PR #1). All tests pass: 37 passed, 8 skipped (live tests without key/gateway).
+- **Found:** `feature/gateway` calls `sentry.assess()`, which isn't in `main`'s newer `sentry.py`. The gateway must be rebased onto `main` before it can merge. Told Person A.
+
+---
+
 ### Still open / next
 - Re-run integration with a real `OPENROUTER_API_KEY` (Jev instead of the fallback) and with Atlas (`MONGODB_URI`); check actions show up in `action_ledger`.
 - Check with Person B that baseline policies cover step 6 (`~/.ssh/*`, `/etc/*`, unauthorized `send_message`).
