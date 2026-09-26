@@ -84,7 +84,8 @@ fi
 
 # ---------- services ----------
 say "starting services"
-uv run --env-file .env uvicorn harness.gateway:app --port 8000 --log-level warning >"$LOG/gateway.log" 2>&1 &
+# EMBED_WATCHER=0: the immune loop runs as its own process below (own log, mock/real Architect switch)
+EMBED_WATCHER=0 uv run --env-file .env uvicorn harness.gateway:app --port 8000 --log-level warning >"$LOG/gateway.log" 2>&1 &
 wait_for 30 curl -sf localhost:8000/health || { tail -20 "$LOG/gateway.log"; fail "gateway didn't start"; }
 ok "gateway      http://localhost:8000  ${D}($(curl -s localhost:8000/health | grep -o '"jev":"[a-z-]*"'))${N}"
 
