@@ -35,14 +35,35 @@
 - **Test your code locally** before pushing
 
 ## Tech Stack
-- MongoDB (database)
-- Node.js/Express or similar backend
-- React/Vue or vanilla JS frontend
-- [Add your actual stack here]
+- **Python 3.10+** (gateway, sentry, architect)
+- **FastAPI** (lightweight API)
+- **Anthropic SDK** (Jev for fast risk eval, Claude for architect analysis)
+- **MongoDB Atlas** (security_policies, action_ledger, attack_signatures, security_incidents)
+- **Streamlit or React** (optional: real-time dashboard)
+
+## Project: Immune Harness
+A self-evolving security system that learns from AI-agent attacks.
+
+### Core Loop
+Observe → Correlate → Block → Analyze → Learn → Protect
+
+### Key Demo: Hugging Face-style Attack
+- Agent A writes secret data to `/tmp/shared-message.txt`
+- Agent B reads same file
+- **Harness detects covert communication**, blocks Agent B
+- **Architect proposes policy**: "Block cross-agent tmp-file channels"
+- **Next attack variant is blocked from memory**
+
+### Collections in MongoDB
+- `security_policies` — active/emergency/validated policies
+- `action_ledger` — all proposed actions (allowed & blocked)
+- `attack_signatures` — learned attack patterns
+- `security_incidents` — decision trails, incident evidence
 
 ## Resources & Setup
 - GitHub repo: https://github.com/Jalil-g/MongoDB-Hackathon
-- [Add environment setup steps, API docs, design specs here]
+- PROJECT_STRUCTURE.md — detailed architecture & task division
+- Attack scenarios based on real OpenAI Hugging Face incident (July 2026)
 
 ## Communication
 - Quick decisions: Slack/Discord
