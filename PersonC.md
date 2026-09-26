@@ -278,6 +278,15 @@ Run: `uv run streamlit run dashboard/app.py`
 
 ---
 
+## Change: scenarios run by themselves (no Enter) ✅
+
+- `--all` now runs **automatically**. After steps 2 and 5 (the ones that should teach the system something) it polls Atlas until a new learned policy version appears (timeout 30s, with a warning if the incident watcher isn't running), then continues. Other steps wait `--gap` seconds (default 2) so viewers can follow.
+- `--manual` brings back "press Enter". `--no-pause` skips all waiting.
+- Without `MONGODB_URI` it can't see policies, so it just waits 5s after those steps.
+- **Tested** on a throwaway Atlas DB (gateway + watcher with `MOCK_ARCHITECT=1`): no key presses, 21s total, v1 learned 0.7s after step 2 and v2 0.7s after step 5. All 7 expected blocks happened (Jev: 3, memory: 4).
+
+---
+
 ### Still open / next
 - Re-run integration with a real `OPENROUTER_API_KEY` (Jev instead of the fallback) and with Atlas (`MONGODB_URI`); check actions show up in `action_ledger`.
 - Check with Person B that baseline policies cover step 6 (`~/.ssh/*`, `/etc/*`, unauthorized `send_message`).
