@@ -8,6 +8,9 @@
 import argparse
 import os
 import time
+import urllib.request
+
+from agents.config import GATEWAY_URL, MOCK_GATEWAY
 
 from agents.hook import call
 
@@ -113,6 +116,16 @@ def wait_for_policy(before, timeout=30.0, poll=0.5):
     return None
 
 
+def gateway_up() -> bool:
+    if MOCK_GATEWAY:
+        return True
+    try:
+        urllib.request.urlopen(GATEWAY_URL.rsplit("/", 1)[0] + "/health", timeout=3)
+        return True
+    except Exception:
+        return False
+
+
 def run_step(key: str):
     name, fn = STEPS[key]
     print(f"\n=== Step {key}: {name} ===")
@@ -137,6 +150,11 @@ def main():
             out = real_call(*args, **kwargs)
             time.sleep(a.slow)
             return out
+
+    if (a.step or a.all) and not gateway_up():
+        raise SystemExit(f"Gateway not running at {GATEWAY_URL}\n"
+                         "Start it first (own terminal):  uv run uvicorn harness.gateway:app --port 8000\n"
+                         "Or run without it:  MOCK_GATEWAY=1 uv run python -m agents.scenarios --all")
 
     if a.step:
         run_step(a.step)
