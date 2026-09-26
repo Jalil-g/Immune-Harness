@@ -86,11 +86,11 @@ def create_app(store: MemoryStore | AtlasStore | None = None, jev: JevScorer | N
             incident_id = None
             if decision.decision == "block" and decision.source in INCIDENT_SOURCES:
                 incident_id = await store.log_incident(action, decision, rows)
+                log.warning("incident %s: %s %s %s — %s", incident_id, action.agent_id, action.tool,
+                            action.target, decision.reason)
         except PyMongoError as e:
             log.error("persistence failed (%s); failing closed", type(e).__name__)
             raise HTTPException(503, "action ledger unavailable; do not execute") from None
-            log.warning("incident %s: %s %s %s — %s", incident_id, action.agent_id, action.tool,
-                        action.target, decision.reason)
         return EvaluateResponse(**decision.model_dump(), incident_id=incident_id)
 
     @app.get("/health")
