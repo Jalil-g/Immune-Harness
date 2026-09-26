@@ -2,8 +2,10 @@
     python3 -m agents.scenarios --all          # every step, pause between
     python3 -m agents.scenarios --step 2       # one step
     MOCK_GATEWAY=1 python3 -m agents.scenarios --all --no-pause
+    python3 -m agents.scenarios --all --slow 1.5   # pause after every action (for the dashboard)
 """
 import argparse
+import time
 
 from agents.hook import call
 
@@ -76,7 +78,17 @@ def main():
     ap.add_argument("--step", choices=STEPS.keys())
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--no-pause", action="store_true")
+    ap.add_argument("--slow", type=float, default=0, help="seconds to wait after every action")
     a = ap.parse_args()
+
+    if a.slow:
+        global call
+        real_call = call
+
+        def call(*args, **kwargs):
+            out = real_call(*args, **kwargs)
+            time.sleep(a.slow)
+            return out
 
     if a.step:
         run_step(a.step)

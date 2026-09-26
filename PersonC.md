@@ -247,6 +247,37 @@ Ran gateway + D's `harness/incident_watcher.py` + my scenarios on real Atlas (th
 
 ---
 
+## Feature 8: Dashboard (`dashboard/app.py`) ✅ + `--slow` for scenarios
+
+Took the dashboard since nobody had started it (it's in D's area in CLAUDE.md, so I told D). Streamlit; reads Atlas only; no new dependencies.
+
+- **Live view** (auto-refresh, 1s default):
+  - KPI tiles: actions, allowed, caught by Jev, blocked by memory, incidents, policy versions learned, median latency memory vs Jev
+  - pipeline strip for the latest action: Agent → Policy memory → Jev → Decision → Incident → Architect → Compiler → Policy live. It stays on the newest incident while the Architect works.
+  - colour-coded action feed
+  - policy memory: versions, v1 struck through as superseded, v2's added globs highlighted
+- **Slow-mo replay:** any action, played back one step at a time at an adjustable speed. Jev's risk meter fills up against the 0.8 threshold. The steps:
+  1. agent action
+  2. every live policy checked, with why it missed
+  3. evidence from the ledger
+  4. Jev
+  5. decision
+  6. incident
+  7. Architect draft + rationale
+  8. Compiler checks
+  9. policy live
+  10. next attempt blocked by memory
+- **"Auto-play each new incident":** during the live demo, every new Jev block is replayed step by step automatically. It waits up to 12s for the Architect.
+- **Compiler checks are recomputed** with the same functions the Compiler uses (`policy_matches`, `BAD_GLOBS`, `MAX_FP`, 200-row replay), so nothing extra has to be stored.
+- **Timing:** a policy's creation time comes from its ObjectId (1s resolution), clamped to after its source incident. "Time to learn" shows "under 1 s" / a range instead of a fake-precise number.
+- **Reset button** (sidebar, needs a confirm) clears the ledger, incidents and learned policies; baselines stay. It's for rehearsals.
+- **`agents.scenarios --slow N`** waits N seconds after every action, so live viewers can follow.
+- **Tested:** Streamlit AppTest renders the live view and all 34 recorded actions in slow-mo with no errors (throwaway Atlas DB). I also checked screenshots of the HTML in dark and light themes.
+
+Run: `uv run streamlit run dashboard/app.py`
+
+---
+
 ### Still open / next
 - Re-run integration with a real `OPENROUTER_API_KEY` (Jev instead of the fallback) and with Atlas (`MONGODB_URI`); check actions show up in `action_ledger`.
 - Check with Person B that baseline policies cover step 6 (`~/.ssh/*`, `/etc/*`, unauthorized `send_message`).
