@@ -45,29 +45,29 @@ Agent Gamma: write_file("/var/tmp/x", ...)
 |---|---|---|
 | Gateway + Sentry | Intercepts every tool call; policy match, then Jev risk score + threat category | FastAPI, Jev via OpenRouter |
 | Architect | Turns incidents into new or updated policies | Claude via OpenRouter + Pydantic structured output |
+| Incident Watcher | Watches `security_incidents` (change stream) → Architect → Compiler → Atlas; runs in-process in the gateway, or standalone | Python |
 | Compiler | Deny-only, scope limits, replay vs benign traffic, activate | Python |
 | Agents + Tool runner | Scripted attackers and benign workers in a sandbox folder | Python |
 | MongoDB Atlas | `security_policies`, `action_ledger`, `security_incidents` + change streams | Atlas |
 | Dashboard | Live ledger, incidents, policy versions | Streamlit |
 
-## Setup
+## Quick Start
 
 ```bash
-git clone https://github.com/Jalil-g/MongoDB-Hackathon.git
-cd MongoDB-Hackathon
-git checkout -b feature/your-feature-name
-# Package management: uv (not pip). Install: curl -LsSf https://astral.sh/uv/install.sh | sh
-uv sync                # creates .venv with Python 3.12 + all deps from uv.lock
-cp .env.example .env   # fill OPENROUTER_API_KEY, MONGODB_URI (.env is gitignored)
+git clone https://github.com/Jalil-g/Immune-Harness.git
+cd Immune-Harness
+# uv (not pip): curl -LsSf https://astral.sh/uv/install.sh | sh
+uv sync
+cp .env.example .env                  # fill OPENROUTER_API_KEY, MONGODB_URI
 uv run python -m db.atlas bootstrap   # once per DB: indexes + baseline policies
-uv run pytest -q       # run tests
-uv run uvicorn harness.gateway:app    # gateway: POST /evaluate
+./scripts/demo.sh                     # gateway + immune loop + dashboard + agents
 ```
 
-Atlas layer details (schemas, `to_mongo()`, condition semantics, policy cache): [db/README.md](db/README.md).
+Dashboard: http://localhost:8501. Options: `./scripts/demo.sh --help` (`--fast`, `--quick`, `--real-architect`, `--no-dashboard`).
 
-Adding a dependency: `uv add <pkg>` (dev-only: `uv add --dev <pkg>`). Commit `pyproject.toml` **and** `uv.lock`.
-Run anything through uv: `uv run python ...`, `uv run uvicorn ...`, `uv run streamlit run ...`.
+Tests: `uv run pytest -q` · Add a dependency: `uv add <pkg>` (commit `pyproject.toml` and `uv.lock`).
+
+More: [db/README.md](db/README.md) (Atlas layer) · [docs/incident_watcher_spec.md](docs/incident_watcher_spec.md)
 
 ## References
 
