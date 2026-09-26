@@ -61,7 +61,7 @@ Jev does not write text. It answers typed questions with calibrated probabilitie
 - `violates_guardrails` — **Noul** (0-1) → the risk score
 - `threat_category` — **Choice** over `benign, covert_channel, credential_access, sandbox_escape, exfiltration, unauthorized_messaging, guardrail_exploit` → the "reason"
   - `guardrail_exploit` is the broad one: the agent goes against its own policy/guardrails or tries to exploit a weakness to get around them (limits, approvals, permissions, injected inputs, path traversal). Works for any domain, e.g. finance agents.
-- Jev's state = the action (incl. `args`), the agent's **guardrails** (natural-language rules: defaults for all agents + per-agent ones, e.g. a payments agent's limits), recent activity by other agents on the target, and authorized edges.
+- Jev's state = the action (incl. `args`), the agent's **guardrails** (natural-language rules: defaults for all agents + per-agent ones, e.g. a payments agent's limits), recent activity by other agents on the target, authorized edges, and **learned policies** (plain-language summaries of active policies, so Jev also blocks *variants* the exact rule misses).
 - Risk = `max(violates_guardrails, 1 − P(benign))`; block if > 0.8.
 
 Free-text explanations come from the Architect (`rationale` field of the policy), off the fast path.

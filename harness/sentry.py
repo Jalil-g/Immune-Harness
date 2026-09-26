@@ -83,7 +83,8 @@ class Sentry:
         since = _as_utc(action.ts) - timedelta(seconds=self.context_window_s)
         rows = self.context(action.target, since)
 
-        for p in self.policies():
+        policies = list(self.policies())
+        for p in policies:
             if policy_matches(p, action, rows, self.authorized_edges):
                 return Decision(
                     decision="block", source="policy", policy_id=p.policy_id,
@@ -91,7 +92,10 @@ class Sentry:
                     latency_ms=(time.perf_counter() - start) * 1000,
                 )
 
-        j = await self.jev.score(action, rows, self.authorized_edges, self.guardrails_for(action.agent_id))
+        # No exact match: Jev still sees the learned policies so it can catch variants of them.
+        active = [p for p in policies if p.status == "active"
+                  and not (p.expires_at and _as_utc(p.expires_at) <= _as_utc(action.ts))]
+        j = await self.jev.score(action, rows, self.authorized_edges, self.guardrails_for(action.agent_id), active)
         block = j.risk > self.threshold
         return Decision(
             decision="block" if block else "allow",
