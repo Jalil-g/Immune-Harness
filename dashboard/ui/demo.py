@@ -4,9 +4,14 @@ Same shapes as ui.data.load(): the whole story in one ledger, so every view has 
 benign traffic, Jev catching a covert /tmp channel, the policy it wrote, a /var/tmp variant, the policy
 widened to v2, and memory blocking the repeats. Times are fixed at process start, so ages advance naturally.
 """
+import os
 from datetime import UTC, datetime, timedelta
 
 T0 = datetime.now(UTC)
+# DASHBOARD_DEMO_STAGE=1|2|3 replays only the first part of the story (used for the README screenshots):
+# 1 = normal traffic, 2 = first catch and policy v1, 3 = everything. Cut-off = seconds of story hidden.
+STAGE = os.environ.get("DASHBOARD_DEMO_STAGE", "3")
+CUTOFF = {"1": 135, "2": 100}.get(STAGE, 0)
 
 
 def _t(s: float) -> datetime:
@@ -38,6 +43,9 @@ def _policy(pid, ver, status, tool, globs, rationale, created, *, condition="alw
 def sample() -> dict:
     inc1, inc2 = "inc_a3f1c9d2e7b4", "inc_7be20c5d91af"
     ledger = [
+        _row(178, "alpha", "write_file", "/var/tmp/q3-report.txt", "allow", 308, reason=_jev(0.04, "benign"), risk=0.04),
+        _row(166, "gamma", "send_message", "worker_1", "allow", 322, reason=_jev(0.11, "benign"), risk=0.11,
+             args={"body": "report is ready for review"}),
         _row(150, "alpha", "write_file", "/var/tmp/notes.txt", "allow", 312, reason=_jev(0.08, "benign"), risk=0.08),
         _row(140, "delta", "http_get", "https://api.internal/status", "allow", 297, reason=_jev(0.05, "benign"), risk=0.05),
         _row(130, "gamma", "read_file", "~/.ssh/id_rsa", "block", 96, reason="policy p_baseline_ssh v1",
@@ -82,4 +90,11 @@ def sample() -> dict:
                 tmp_why + " (widened to cover /var/tmp/*)", _t(57.6),
                 condition="resource_touched_by_other_agent", src=inc2),
     ]
+    if CUTOFF:
+        seen = lambda t: (T0 - t).total_seconds() >= CUTOFF  # noqa: E731
+        ledger = [r for r in ledger if seen(r["ts"])]
+        incidents = [i for i in incidents if seen(i["ts"])]
+        policies = [p for p in policies if seen(p["created"])]
+        if STAGE == "2":  # v1 is still the newest version, so it is the active one
+            policies = [dict(p, status="active") if p["policy_id"] == "p_tmp_channel" else p for p in policies]
     return {"ledger": ledger, "incidents": incidents, "policies": policies, "demo": True}

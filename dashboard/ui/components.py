@@ -141,7 +141,8 @@ def _lineage(data, r) -> str:
         if pol:
             ver = f'v{pol["version"]}'
             note = (f'widened from v{pol["version"] - 1}' if pol["version"] > 1 else "")
-            took = f'written {D.learn_time(v1, inc0)} after the first catch' if inc0 and v1 else "always active"
+            lead = "v1 written" if pol["version"] > 1 else "written"
+            took = f'{lead} {D.learn_time(v1, inc0)} after the first catch' if inc0 and v1 else "always active"
             second = _cell("2 · Policy", "Stored in Atlas, live on every gateway",
                            f'{by_pill(r)} <span class="mono">{ver}</span>', " · ".join(x for x in (note, took) if x))
         else:
@@ -216,7 +217,7 @@ def feed(data, n=18) -> str:
             f'<td><div class="res">{decision_pill(r)}{by_pill(r)}</div></td><td>{risk_html}</td>'
             f'<td class="lat {fast}">{r["latency_ms"]:.0f} ms</td></tr>')
     # widths on <th>: Streamlit's HTML sanitizer drops <colgroup>
-    head = ('<tr><th style="width:84px">Agent</th><th>Action</th><th style="width:138px">Decision · by</th>'
+    head = ('<tr><th style="width:84px">Agent</th><th>Action</th><th style="width:184px">Decision · by</th>'
             '<th style="width:96px">Risk</th><th style="width:82px;text-align:right">Latency</th></tr>')
     return f'<div class="ih-panel"><table class="ih-feed">{head}{"".join(body)}</table></div>'
 

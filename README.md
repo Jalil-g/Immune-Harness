@@ -36,19 +36,19 @@ Policies **are** the memory: known attacks are blocked by a policy match; new at
 
 ## Demo in 3 screenshots
 
-**1 · Normal work is allowed.** Worker agents write reports, call APIs and message teammates. Jev scores each action (risk 0.02–0.17) and everything goes through. No incidents, no policies learned yet.
+**1 · Normal work is allowed.** Worker agents write reports, call APIs and message teammates. Jev scores each action (risk 0.04–0.11) and everything goes through: the latest decision reads **Allowed**. No incidents, no policies learned yet.
 
-![Benign traffic: every action allowed, pipeline green](docs/screenshots/01-benign-traffic.png)
+![Benign traffic: every action allowed, no incidents, no policies learned](docs/screenshots/01-benign-traffic.png)
 
-**2 · First catch — and the system learns.** Agent `alpha` writes a note to `/tmp/shared-note.txt`, agent `beta` reads it: a covert channel. Jev sees alpha's recent write in the Atlas ledger and scores it **1.00 covert_channel → BLOCK**. The incident wakes the Architect, the Compiler validates the draft (0 false positives on replayed traffic), and **`p_tmp_channel v1` is live** — the pipeline runs all the way to *Policy live*.
+**2 · First catch — and the system learns.** Agent `alpha` writes a note to `/tmp/shared-message.txt`, agent `beta` reads it: a covert channel. Jev sees alpha's recent write in the Atlas ledger and scores it **0.94 covert_channel → Blocked**. The incident wakes the Architect, the Compiler validates the draft (0 false positives on replayed traffic), and **`p_tmp_channel v1` is live**. The latest decision shows the lineage: first catch → policy written → next attempt (waiting for a repeat).
 
 ![First catch: Jev blocks the covert channel and policy v1 is learned](docs/screenshots/02-first-catch-learns-v1.png)
 
-**3 · Blocked from memory, and the rule widens itself.** The same trick from another agent is blocked **by the policy, without calling Jev** (cyan rows). A variant in `/var/tmp` slips past v1, Jev catches it, and the policy **widens to v2** (`+ /var/tmp/*`, v1 superseded). Memory blocks took a median **124 ms vs 325 ms** for a Jev decision — **2.6× faster**.
+**3 · Blocked from memory, and the rule widens itself.** The same trick from another agent is blocked **by the policy, without calling Jev** (filled blue square in the log). A variant in `/var/tmp` slips past v1, Jev catches it, and the policy **widens to v2** (`+ /var/tmp/*`, v1 superseded). Memory blocks in this run took 118–148 ms and needed no LLM call; Jev decisions took 361–388 ms.
 
-![Memory blocks in cyan, policy widened from v1 to v2, speed comparison](docs/screenshots/03-memory-blocks-and-v2.png)
+![Memory blocks the repeat, policy widened from v1 to v2](docs/screenshots/03-memory-blocks-and-v2.png)
 
-Result of the full run: **27 actions · 20 allowed · 3 caught by Jev · 4 blocked from memory · 2 policy versions learned · 0 false positives.**
+Result of the sample run: **15 actions · 7 allowed · 2 caught by Jev · 6 blocked from memory · 2 policy versions learned · 0 false positives.** The screenshots are the dashboard's built-in sample story (`DASHBOARD_DEMO=1`), which shows the same views as live Atlas data; the amber badge in the header says so.
 
 ## Quick start
 
@@ -98,8 +98,9 @@ To run the immune loop as its own process instead: start the gateway with `EMBED
 ## Dashboard
 
 `dashboard/app.py` (Streamlit, reads Atlas only):
-- **Live** — hero numbers (caught by Jev, blocked by memory, versions learned), a memory-vs-Jev speed card, the pipeline of the latest event (Agent → Memory → Jev → Decision → Incident → Architect → Compiler → Policy live), every action with who decided it, and the policy memory with its version history and diffs.
+- **Live** — the latest decision as a ledger entry (verdict, who decided it, and first catch → policy written → this decision), three headline counts (caught by Jev, blocked by memory, policies learned), the action log with a filled square for memory decisions and an outlined square for Jev decisions, and the policy memory with its version history and diffs.
 - **Slow-mo** — replay any action step by step: every policy checked and why it missed, the evidence handed to Jev, Jev's risk meter, the incident, the Architect's draft, the Compiler's checks (recomputed with the Compiler's own functions), the policy going live, and the next attempt blocked from memory. Can auto-play each new incident during a live demo.
+- **Sample data** — if Atlas can't be reached (or with `DASHBOARD_DEMO=1`) the dashboard shows a built-in sample story, badged as such and read-only, so the UI can be developed and shown without a database. Live data takes over automatically once Atlas answers.
 
 ## Components
 
