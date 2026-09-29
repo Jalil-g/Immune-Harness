@@ -2,6 +2,7 @@
 
 Run from the repo root:  uv run streamlit run dashboard/app.py
 Reads Atlas only (MONGODB_URI / MONGODB_DB from .env).
+If Atlas can't be reached (or DASHBOARD_DEMO=1) it shows built-in sample data, clearly badged, and never writes.
 Data + logic: ui/data.py · styles: ui/styles.py · render helpers: ui/components.py
 """
 import sys
@@ -53,21 +54,21 @@ with st.sidebar:
     st.markdown('<div class="ih-side-h">Timing</div>', unsafe_allow_html=True)
     refresh = st.slider("Live refresh", 0.5, 5.0, 1.0, 0.5, format="every %.1f s")
     speed = st.slider("Slow-mo speed", 0.3, 4.0, 1.4, 0.1, format="%.1f s per step")
-    try:
-        db = D.atlas().settings.database
-    except Exception as ex:  # noqa: BLE001
-        st.error(f"Atlas not reachable: {ex}")
-        st.stop()
+    demo = D.demo_mode()
+    db = D.db_name()
     st.markdown('<div class="ih-side-h">Demo data</div>', unsafe_allow_html=True)
-    st.caption("Clears actions, incidents and learned policies. Baseline policies stay.")
-    sure = st.checkbox("I want to reset", key="reset_sure")
-    if st.button("Reset demo data", key="reset_btn", disabled=not sure, use_container_width=True):
+    if demo:
+        st.caption("Sample data is on, so nothing here can be reset. Reconnect to Atlas to see real actions.")
+    else:
+        st.caption("Clears actions, incidents and learned policies. Baseline policies stay.")
+    sure = st.checkbox("I want to reset", key="reset_sure", disabled=demo)
+    if st.button("Reset demo data", key="reset_btn", disabled=demo or not sure, use_container_width=True):
         D.reset_demo_data()
         for k in ("kpi_prev", "played", "last_story"):
             st.session_state.pop(k, None)
         st.toast("Demo data cleared — ready for a fresh run")
 
-st.html(C.header(live=view == "Live", db=db))
+st.html(C.header(live=view == "Live", db=db, demo=demo))
 
 # ---------- live ----------
 

@@ -8,11 +8,13 @@ from datetime import UTC, datetime, timedelta
 from fnmatch import fnmatchcase
 
 import streamlit as st
+from pymongo.errors import PyMongoError
 
 from db.atlas import Atlas
 from db.schemas import Action, Policy
 from harness.compiler import BAD_GLOBS, MAX_FP
 from harness.sentry import policy_matches
+from ui import demo
 
 try:
     from agents.config import AUTHORIZED_EDGES
@@ -30,7 +32,41 @@ def atlas() -> Atlas:
     return Atlas()
 
 
+FORCE_DEMO = os.environ.get("DASHBOARD_DEMO", "").lower() in ("1", "true", "yes")
+
+
+@st.cache_data(ttl=20, show_spinner=False)
+def _reachable() -> bool:
+    try:
+        atlas().ping()
+        return True
+    except Exception:  # noqa: BLE001 - bad URI, missing .env, network, IP allow-list: all mean "use sample data"
+        return False
+
+
+def demo_mode() -> bool:
+    """Sample data when forced with DASHBOARD_DEMO=1, or when Atlas can't be reached (re-checked every 20 s)."""
+    return FORCE_DEMO or not _reachable()
+
+
+def db_name() -> str:
+    try:
+        return atlas().settings.database
+    except Exception:  # noqa: BLE001
+        return "immune_harness"
+
+
 def load():
+    if demo_mode():
+        return demo.sample()
+    try:
+        return _load_atlas()
+    except PyMongoError:  # Atlas went away mid-session: fall back and re-probe on the next refresh
+        _reachable.clear()
+        return demo.sample()
+
+
+def _load_atlas():
     a = atlas()
     ledger = list(a.action_ledger.find({}, {"_id": 0}).sort("ts", -1).limit(400))[::-1]
     incidents = list(a.security_incidents.find({}, {"_id": 0}).sort("ts", -1).limit(100))[::-1]
@@ -43,10 +79,12 @@ def load():
         d["created"] = max(d["oid_time"], src + timedelta(milliseconds=1)) if src else d["oid_time"]
         policies.append(d)
     policies.sort(key=lambda d: (d["policy_id"], d["version"]))
-    return {"ledger": ledger, "incidents": incidents, "policies": policies}
+    return {"ledger": ledger, "incidents": incidents, "policies": policies, "demo": False}
 
 
 def reset_demo_data():
+    if demo_mode():
+        return
     a = atlas()
     a.action_ledger.delete_many({})
     a.security_incidents.delete_many({})

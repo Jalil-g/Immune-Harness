@@ -49,6 +49,7 @@ code, .mono { font-family: var(--mono); }
 .ih-replay i { background: var(--mem); animation: none; }
 .ih-badge { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; border-radius: 3px; font-size: .84rem;
   color: var(--muted); background: transparent; border: 1px solid var(--rule-2); }
+.ih-badge.demo { color: var(--jev); border-color: var(--jev); background: var(--jev-bg); font-weight: 600; }
 .ih-badge b { font-family: var(--mono); color: var(--ink); font-weight: 500; }
 
 /* ---------- figures strip ---------- */

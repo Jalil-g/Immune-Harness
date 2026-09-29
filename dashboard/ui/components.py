@@ -70,13 +70,15 @@ def risk_color(risk) -> str:
 
 # ---------- header + KPIs ----------
 
-def header(live: bool, db: str) -> str:
+def header(live: bool, db: str, demo: bool = False) -> str:
     mode = ('<span class="ih-live"><i></i>LIVE</span>' if live
             else '<span class="ih-live ih-replay"><i></i>SLOW-MO</span>')
     logo = '<i class="ico ico-logo" style="font-size:26px"></i>'
+    badge = ('<span class="ih-badge demo">Sample data · Atlas not connected</span>' if demo
+             else f'<span class="ih-badge">{svg("memory", 14)} Atlas <b>{e(db)}</b></span>')
     return (f'<div class="ih-head"><div class="ih-logo">{logo}</div><div><div class="ih-brand">Immune Harness</div>'
             f'<div class="ih-tag">A safety gateway for AI agents: the first attack is caught by an LLM, every repeat is blocked from memory</div></div>'
-            f'<div class="ih-head-r">{mode}<span class="ih-badge">{svg("memory", 14)} Atlas <b>{e(db)}</b></span>'
+            f'<div class="ih-head-r">{mode}{badge}'
             f'</div></div>')
 
 
@@ -176,8 +178,8 @@ def pipeline(data, r) -> str:
             f'<span class="pill ghost mono">{e(r["tool"])}</span>'
             f'<span class="tgt" title="{e(r["target"])}">{e(r["target"])}</span></div>')
     risk, cat, _ = D.jev_of(r)
-    sub = ("The tool never ran." if blocked else
-           f'The tool ran in ./sandbox and was logged{f" · risk {risk:.2f} {e(cat or "benign")}" if risk is not None else ""}.')
+    ran = f" · risk {risk:.2f} {e(cat or 'benign')}" if risk is not None else ""
+    sub = "The tool never ran." if blocked else f"The tool ran in ./sandbox and was logged{ran}."
     verdict = (f'<div class="ih-verdict {"block" if blocked else "allow"}"><span class="w">{"Blocked" if blocked else "Allowed"}</span>'
                f'<span class="by">decided by {by_pill(r)}</span><span class="ms mono">{r["latency_ms"]:.0f} ms</span></div>'
                f'<div class="ih-vsub">{sub}</div>')
