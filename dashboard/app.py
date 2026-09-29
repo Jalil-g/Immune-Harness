@@ -6,6 +6,7 @@ Data + logic: ui/data.py · styles: ui/styles.py · render helpers: ui/component
 """
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -77,17 +78,17 @@ if view == "Live":
         s = D.stats(data)
         prev = st.session_state.get("kpi_prev")
         st.session_state["kpi_prev"] = s
-        st.html(C.kpis(s, prev))
-        st.html(C.section("Pipeline", "the latest event, stage by stage"))
         r = D.focus_row(data)
+        st.html(C.section("Latest decision", f"each action passes the gateway before its tool runs · updated {datetime.now(UTC):%H:%M:%S} UTC"))
         st.html(C.pipeline(data, r) if r else C.empty(
-            "No actions yet — run <code>uv run python -m agents.scenarios --all</code>"))
+            "Waiting for the first agent action. Baseline policies are armed.", hint="uv run python -m agents.scenarios --all"))
+        st.html(C.kpis(s, prev))
         left, right = st.columns([7, 4], gap="large")
         with left:
-            st.html(C.section("Every action", "newest first · cyan = blocked by memory · red = caught by Jev"))
+            st.html(C.section("Action log", C.tally(s)))
             st.html(C.feed(data))
         with right:
-            st.html(C.section("Policy memory", "Atlas · security_policies"))
+            st.html(C.section("Policy memory", "what the gateway has learned, versioned"))
             st.html(C.memory(data))
     live()
 

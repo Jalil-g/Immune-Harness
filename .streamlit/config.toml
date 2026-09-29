@@ -1,12 +1,12 @@
 # Dashboard theme (dashboard/app.py). Colours match dashboard/ui/styles.py.
 [theme]
-base = "dark"
-primaryColor = "#22d3ee"
-backgroundColor = "#0a0b0f"
-secondaryBackgroundColor = "#12141a"
-textColor = "#eef0f5"
-borderColor = "rgba(255,255,255,0.08)"
-baseRadius = "12px"
+base = "light"
+primaryColor = "#1c3ab5"
+backgroundColor = "#f3efe6"
+secondaryBackgroundColor = "#ebe6da"
+textColor = "#15171c"
+borderColor = "#b9b09b"
+baseRadius = "4px"
 
 [server]
 headless = true

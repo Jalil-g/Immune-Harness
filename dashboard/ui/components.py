@@ -5,8 +5,8 @@ from datetime import UTC
 from ui import data as D
 
 
-TONE = {"allow": "var(--allow)", "block": "var(--block)", "jev": "var(--jev)", "mem": "var(--mem)",
-        "learn": "var(--learn)", "muted": "var(--muted)"}
+TONE = {"allow": "var(--ink)", "block": "var(--block)", "jev": "var(--jev)", "mem": "var(--mem)",
+        "learn": "var(--mem)", "muted": "var(--muted)"}
 
 
 def e(x) -> str:
@@ -41,25 +41,31 @@ def decision_pill(r) -> str:
 
 
 def by_pill(r) -> str:
+    """Who decided: filled square = memory (policy), outlined square = Jev. Independent of the verdict colour."""
     p = D.path_of(r)
     if p == "policy":
         pid = r.get("policy_id") or "policy"
-        return f'<span class="pill mem" title="{e(pid)}">{svg("memory", 13)} {e(pid)}</span>'
-    return f'<span class="pill jev">{svg("jev", 13)} {"Jev" if p == "jev" else "fallback"}</span>'
+        return f'<span class="path mem" title="{e(pid)}"><i class="sq"></i>{e(pid)}</span>'
+    return f'<span class="path jev"><i class="sq"></i>{"Jev" if p == "jev" else "Fallback rules"}</span>'
+
+
+def tally(s: dict) -> str:
+    n = int(s["incidents"])
+    return f'{s["actions"]:.0f} actions · {s["allowed"]:.0f} allowed · {n} incident{"" if n == 1 else "s"} sent to the Architect'
 
 
 def section(title, sub="") -> str:
     return f'<div class="ih-sec"><h3>{e(title)}</h3><span>{e(sub)}</span></div>'
 
 
-def empty(msg) -> str:
-    return f'<div class="ih-empty">{msg}</div>'
+def empty(msg, hint="") -> str:
+    return f'<div class="ih-empty">{msg}{f"<code>{e(hint)}</code>" if hint else ""}</div>'
 
 
 def risk_color(risk) -> str:
     if risk is None:
         return "var(--faint)"
-    return "var(--block)" if risk > D.THRESHOLD else "var(--jev)" if risk >= 0.4 else "var(--allow)"
+    return "var(--block)" if risk > D.THRESHOLD else "var(--jev)" if risk >= 0.4 else "var(--ok)"
 
 
 # ---------- header + KPIs ----------
@@ -69,7 +75,7 @@ def header(live: bool, db: str) -> str:
             else '<span class="ih-live ih-replay"><i></i>SLOW-MO</span>')
     logo = '<i class="ico ico-logo" style="font-size:26px"></i>'
     return (f'<div class="ih-head"><div class="ih-logo">{logo}</div><div><div class="ih-brand">Immune Harness</div>'
-            f'<div class="ih-tag">AI agents that get attacked once — and remember it forever</div></div>'
+            f'<div class="ih-tag">A safety gateway for AI agents: the first attack is caught by an LLM, every repeat is blocked from memory</div></div>'
             f'<div class="ih-head-r">{mode}<span class="ih-badge">{svg("memory", 14)} Atlas <b>{e(db)}</b></span>'
             f'</div></div>')
 
@@ -81,47 +87,20 @@ def count(value, prev) -> str:
     v = int(round(value))
     p = v if prev is None else int(round(prev))
     cls = "count up" if p != v else "count"
-    return f'<span class="{cls}" style="--from:{p};--to:{v}" aria-label="{v}"></span>'
+    return f'<span class="{cls}" style="--from:{p};--to:{v}" role="img" aria-label="{v}"></span>'
 
 
 def kpis(s: dict, prev: dict | None) -> str:
     pv = (prev or {}).get
 
-    def hero(key, label, sub, tone):
-        return (f'<div class="ih-card ih-hero" style="--c:{TONE[tone]}"><div class="n">{count(s[key], pv(key))}</div>'
+    def fig(key, label, sub, tone):
+        return (f'<div class="ih-fig" style="--c:{TONE[tone]}"><div class="n">{count(s[key], pv(key))}</div>'
                 f'<div class="l">{label}</div><div class="s">{sub}</div></div>')
 
-    mem, jev = s["mem_ms"], s["jev_ms"]
-    if mem and jev:
-        x = jev / mem
-        speed = f'<div class="x">{x:.1f}×<small>faster from memory</small></div>'
-        wm, wj = max(mem / max(mem, jev) * 100, 3), 100
-    else:
-        speed = '<div class="x" style="color:var(--faint)">—<small>no memory blocks yet</small></div>'
-        wm, wj = 0, 100 if jev else 0
-    ms = lambda v: f'{v:.0f} ms' if v else "–"  # noqa: E731
-    speed_card = (
-        f'<div class="ih-card ih-speed"><div class="top"><div class="t">Speed · median decision</div></div>{speed}'
-        f'<div class="ih-bars">'
-        f'<div class="ih-bar"><span style="color:var(--mem);font-weight:700">{svg("memory", 14)} Memory</span>'
-        f'<div class="track"><div class="fill" style="width:{wm:.0f}%;background:var(--mem)"></div></div>'
-        f'<span class="v" style="color:var(--mem)">{ms(mem)}</span></div>'
-        f'<div class="ih-bar"><span style="color:var(--jev);font-weight:700">{svg("jev", 14)} Jev (LLM)</span>'
-        f'<div class="track"><div class="fill" style="width:{wj:.0f}%;background:var(--jev)"></div></div>'
-        f'<span class="v" style="color:var(--jev)">{ms(jev)}</span></div></div></div>')
-    top = ('<div class="ih-kpis">'
-           + hero("caught_by_jev", "caught by Jev", "new attacks, scored by the LLM", "jev")
-           + hero("blocked_by_memory", "blocked by memory", "known attacks · no LLM call", "mem")
-           + hero("learned", "policy versions learned", "rules the system wrote itself", "learn")
-           + speed_card + "</div>")
-
-    def mini(key, label, color):
-        return (f'<div class="ih-card ih-mini"><span class="n" style="color:{color}">{count(s[key], pv(key))}</span>'
-                f'<span class="l">{label}</span></div>')
-    bottom = ('<div class="ih-kpis2">' + mini("actions", "actions seen", "var(--text)")
-              + mini("allowed", "✓ allowed", "var(--allow)") + mini("incidents", "incidents → Architect", "var(--block)")
-              + "</div>")
-    return top + bottom
+    figs = (fig("caught_by_jev", "Caught by Jev", "new attacks, scored by the LLM", "jev")
+            + fig("blocked_by_memory", "Blocked by memory", "known attacks, no LLM call", "mem")
+            + fig("learned", "Policies learned", "rules the system wrote itself", "mem"))
+    return f'<div class="ih-strip" role="status"><div class="ih-figs">{figs}</div></div>'
 
 
 # ---------- pipeline ----------
@@ -134,53 +113,80 @@ def event_header(r) -> str:
             f'{decision_pill(r)}{by_pill(r)}</div>')
 
 
-def pipeline(data, r) -> str:
-    path, blocked = D.path_of(r), r["decision"] == "block"
-    color = "mem" if path == "policy" else ("block" if blocked else "allow")
-    inc = D.incident_for(data, r) if blocked and path != "policy" else None
-    pol = D.policy_from_incident(data, inc) if inc else None
-    risk, cat, _ = D.jev_of(r)
-    # (icon, label, sub, state, tone)
-    nodes = [("agent", "Agent", r["agent_id"], "on", color)]
-    if path == "policy":
-        nodes += [("memory", "Memory", f'match {r.get("policy_id") or ""}', "on", "mem"),
-                  ("jev", "Jev", "skipped", "skip", "mem")]
-    else:
-        nodes += [("memory", "Memory", "no match", "on", color),
-                  ("jev", "Jev", f'{risk or 0:.2f} {cat or ""}', "on", color)]
-    nodes.append(("decision", "Decision", "✕ BLOCK" if blocked else "✓ ALLOW", "on", color))
-    if inc:
-        nodes.append(("incident", "Incident", inc["incident_id"][4:12], "on", "block"))
-        if pol:
-            nodes += [("architect", "Architect", pol["policy_id"], "on", "learn"),
-                      ("compiler", "Compiler", "✓ validated", "on", "learn"),
-                      ("live", "Policy live", f'v{pol["version"]} active', "on", "learn")]
-        elif D.age_s(inc["ts"]) < 30:
-            nodes += [("architect", "Architect", "drafting…", "busy", "learn"),
-                      ("compiler", "Compiler", "", "off", "learn"), ("live", "Policy live", "", "off", "learn")]
-        else:
-            nodes += [("architect", "Architect", "no policy", "off", "learn"),
-                      ("compiler", "Compiler", "rejected", "off", "learn"), ("live", "Policy live", "–", "off", "learn")]
-    else:
-        tail = "known attack" if path == "policy" else "not needed"
-        nodes += [("incident", "Incident", tail, "off", "block"), ("architect", "Architect", "", "off", "learn"),
-                  ("compiler", "Compiler", "", "off", "learn"), ("live", "Policy live", "", "off", "learn")]
+def _cell(step, title, main, detail, state="done") -> str:
+    return (f'<div class="ih-led {state}"><div class="k">{step}</div><div class="ttl">{title}</div>'
+            f'<div class="m">{main}</div><div class="d">{detail}</div></div>')
 
-    fresh = D.age_s(r["ts"]) < 6
-    cells = []
-    for i, (icon, lab, sub, state, tone) in enumerate(nodes):
-        conn = ""
-        if i < len(nodes) - 1:
-            nxt = nodes[i + 1]
-            on = state in ("on", "skip") and nxt[3] in ("on", "skip", "busy")
-            pk = f'<span class="pk" style="--d:{i * .22:.2f}s"></span>' if on and fresh else ""
-            conn = f'<span class="ih-conn {"on" if on else ""}" style="--c:{TONE[nxt[4]]}">{pk}</span>'
-        cls = {"on": "on", "busy": "busy", "skip": "on skip", "off": ""}[state]
-        dot_style = "border-style:dashed;" if state == "skip" else ""
-        cells.append(f'<div class="ih-node {cls}" style="--c:{TONE[tone]}">{conn}'
-                     f'<div class="dot" style="{dot_style}">{svg(icon, 20)}</div><div class="lab">{lab}</div>'
-                     f'<div class="sub" title="{e(sub)}">{e(sub) or "&nbsp;"}</div></div>')
-    return f'<div class="ih-pipe">{event_header(r)}<div class="ih-flow">{"".join(cells)}</div></div>'
+
+def _jev_line(r) -> str:
+    risk, cat, _ = D.jev_of(r)
+    return f'{by_pill(r)} <span class="mono">risk {risk or 0:.2f}</span> {e(cat or "")}'
+
+
+def _lineage(data, r) -> str:
+    """First catch -> policy written -> this decision, for a blocked action."""
+    if D.path_of(r) == "policy":
+        pid = r.get("policy_id") or ""
+        pol = D.policy_doc(data, pid)
+        v1 = next((d for d in data["policies"] if d["policy_id"] == pid and d["version"] == 1), None)
+        inc0 = next((i for i in data["incidents"] if v1 and i["incident_id"] == v1.get("source_incident")), None)
+        r0 = D.row_for(data, inc0) if inc0 else None
+        if r0:
+            first = _cell("1 · First catch", "Jev blocked the original attack", _jev_line(r0),
+                          f'{e(r0["agent_id"])} · {e(r0["tool"])} · {hhmmss(r0["ts"])} UTC · {r0["latency_ms"]:.0f} ms')
+        else:
+            first = _cell("1 · Origin", "Seeded before any attack", "Baseline policy", "shipped with the gateway")
+        if pol:
+            ver = f'v{pol["version"]}'
+            note = (f'widened from v{pol["version"] - 1}' if pol["version"] > 1 else "")
+            took = f'written {D.learn_time(v1, inc0)} after the first catch' if inc0 and v1 else "always active"
+            second = _cell("2 · Policy", "Stored in Atlas, live on every gateway",
+                           f'{by_pill(r)} <span class="mono">{ver}</span>', " · ".join(x for x in (note, took) if x))
+        else:
+            second = _cell("2 · Policy", "Stored in Atlas", by_pill(r), "")
+        third = _cell("3 · This decision", "Blocked from memory", f'<span class="mono">{r["latency_ms"]:.0f} ms</span>',
+                      "no Jev call, no new incident, tool never ran")
+        return f'<div class="ih-lineage">{first}{second}{third}</div>'
+    inc = D.incident_for(data, r)
+    pol = D.policy_from_incident(data, inc) if inc else None
+    first = _cell("1 · First catch", "Jev blocked this action", _jev_line(r),
+                  f'incident {e(inc["incident_id"][4:12]) if inc else "not found"} · {r["latency_ms"]:.0f} ms')
+    if pol:
+        second = _cell("2 · Policy", "Architect drafted, Compiler validated",
+                       f'<span class="path mem"><i class="sq"></i>{e(pol["policy_id"])}</span> <span class="mono">v{pol["version"]}</span>',
+                       f'live {D.learn_time(pol, inc)} after the incident')
+        nxt = D.next_blocked_by(data, pol)
+        third = (_cell("3 · Next attempt", "Blocked from memory", f'<span class="mono">{nxt["latency_ms"]:.0f} ms</span>',
+                       "no Jev call, no new incident") if nxt else
+                 _cell("3 · Next attempt", "Waiting for a repeat", "Not seen yet", "the next matching action will be blocked", "wait"))
+    elif inc and D.age_s(inc["ts"]) < 30:
+        second = _cell("2 · Policy", "Architect is drafting", "Drafting…", "the Compiler validates it before it goes live", "busy")
+        third = _cell("3 · Next attempt", "Waiting for a policy", "–", "", "wait")
+    else:
+        second = _cell("2 · Policy", "No policy produced", "None", "the Compiler rejected the draft, or the incident watcher is not running", "wait")
+        third = _cell("3 · Next attempt", "Not protected yet", "–", "", "wait")
+    return f'<div class="ih-lineage">{first}{second}{third}</div>'
+
+
+def pipeline(data, r) -> str:
+    """The latest decision as one ledger entry: the verdict first, then how the system got there."""
+    blocked = r["decision"] == "block"
+    head = (f'<div class="ih-evt"><span class="time">{hhmmss(r["ts"])} UTC</span>'
+            f'<span class="pill agent">{svg("agent", 13)} {e(r["agent_id"])}</span>'
+            f'<span class="pill ghost mono">{e(r["tool"])}</span>'
+            f'<span class="tgt" title="{e(r["target"])}">{e(r["target"])}</span></div>')
+    risk, cat, _ = D.jev_of(r)
+    sub = ("The tool never ran." if blocked else
+           f'The tool ran in ./sandbox and was logged{f" · risk {risk:.2f} {e(cat or "benign")}" if risk is not None else ""}.')
+    verdict = (f'<div class="ih-verdict {"block" if blocked else "allow"}"><span class="w">{"Blocked" if blocked else "Allowed"}</span>'
+               f'<span class="by">decided by {by_pill(r)}</span><span class="ms mono">{r["latency_ms"]:.0f} ms</span></div>'
+               f'<div class="ih-vsub">{sub}</div>')
+    legend = ('<div class="ih-legend"><span><i class="sq mem"></i><b>Filled square</b> decided by memory</span>'
+              '<span><i class="sq jev"></i><b>Outlined square</b> decided by Jev, the LLM</span>'
+              '<span><b class="red">Red</b> the action was blocked</span></div>')
+    gloss = ('<div class="ih-glossary"><b>Jev</b> scores each action for risk · <b>Architect</b> drafts a policy from a blocked attack · '
+             '<b>Compiler</b> checks the policy against past traffic before it goes live</div>')
+    return f'<div class="ih-pipe">{head}{verdict}{_lineage(data, r) if blocked else ""}{legend}{gloss}</div>'
 
 
 # ---------- feed ----------

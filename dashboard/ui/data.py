@@ -20,6 +20,7 @@ except ImportError:
     AUTHORIZED_EDGES = set()
 
 THRESHOLD = float(os.environ.get("RISK_THRESHOLD", "0.8"))
+HOLD_S = 8  # how long the pipeline stays on a fresh memory block
 REASON_RE = re.compile(r"^(jev|fallback) risk=([\d.]+) category=(\w+) \(([\d.]+)\)")
 REPLAY_ROWS = 200
 
@@ -216,7 +217,8 @@ def _median(xs):
 
 
 def focus_row(data):
-    """The event the pipeline should show: the newest action, or the newest incident while it's still learning."""
+    """The event the pipeline should show. Priority: an incident still being learned, then a memory block held
+    for HOLD_S seconds so the payoff frame can be read, else the newest action."""
     if not data["ledger"]:
         return None
     focus = data["ledger"][-1]
@@ -224,5 +226,8 @@ def focus_row(data):
         inc = data["incidents"][-1]
         r = row_for(data, inc)
         if r and age_s(inc["ts"]) < 12:
-            focus = r
+            return r
+    for r in reversed(data["ledger"][-12:]):
+        if r["decision"] == "block" and path_of(r) == "policy" and age_s(r["ts"]) < HOLD_S:
+            return r
     return focus
